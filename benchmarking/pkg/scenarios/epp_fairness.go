@@ -5,59 +5,40 @@ import (
 	"math"
 )
 
-// S5EPPFairness returns config for Scenario 5: Validating EPP probability fairness.
-func S5EPPFairness() *Scenario {
+// GetEPPFairnessScenario returns the S5 (Fairness/Distribution) configuration.
+func GetEPPFairnessScenario() *Scenario {
 	return &Scenario{
-		Name:                   "epp-fairness",
-		Description:            "Measures EPP selection distribution checking fairness algorithms.",
+		Name:                   "S5-EPP-Fairness",
+		Description:            "Verifies traffic distribution across heterogeneous tiers",
 		GatewayClass:           "kgateway",
 		EnableInferenceRouting: true,
 		EnableBodyParsing:      true,
-		TargetRPS:              50,
+		TargetRPS:              100,
 		DurationSeconds:        120,
 		ConcurrentUsers:        10,
 		WarmupSeconds:          30,
 		BackendTiers: []BackendTier{
-			{
-				Name:            "tier-large",
-				CPULimit:        "4",
-				MemoryLimit:     "4Gi",
-				ResponseDelayMs: 50,
-				Replicas:        1,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "large"},
-			},
-			{
-				Name:            "tier-medium",
-				CPULimit:        "2",
-				MemoryLimit:     "2Gi",
-				ResponseDelayMs: 100,
-				Replicas:        1,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "medium"},
-			},
-			{
-				Name:            "tier-small",
-				CPULimit:        "0.5",
-				MemoryLimit:     "512Mi",
-				ResponseDelayMs: 200,
-				Replicas:        1,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "small"},
-			},
+			{Name: "tier-large", CPULimit: "4", ResponseDelayMs: 50, Replicas: 2},
+			{Name: "tier-medium", CPULimit: "2", ResponseDelayMs: 100, Replicas: 1},
+			{Name: "tier-small", CPULimit: "0.5", ResponseDelayMs: 200, Replicas: 1},
 		},
 	}
 }
 
-// CheckFairness verifies actual traffic distribution against expected thresholds
+// CheckFairness verifies that traffic is distributed close to expected ratios.
+// actual: map of tier name to percentage (0.0-100.0)
+// expected: map of tier name to expected percentage
+// tolerancePct: allowed deviation (e.g., 5.0 for 5%)
 func CheckFairness(actual map[string]float64, expected map[string]float64, tolerancePct float64) error {
-	for name, expRate := range expected {
-		actRate, found := actual[name]
-		if !found {
-			return fmt.Errorf("missing metric for backend %s", name)
+	for tier, exp := range expected {
+		act, ok := actual[tier]
+		if !ok {
+			return fmt.Errorf("missing data for expected tier: %s", tier)
 		}
-		
-		diff := math.Abs(actRate - expRate)
+		diff := math.Abs(act - exp)
 		if diff > tolerancePct {
-			return fmt.Errorf("fairness violated for %s: expect=%.1f%%, actual=%.1f%% (diff=%.1f%%, tol=%.1f%%)",
-				name, expRate, actRate, diff, tolerancePct)
+			return fmt.Errorf("tier %s distribution mismatch: got %.2f%%, want %.2f%% (diff %.2f%% exceeds tolerance %.2f%%)",
+				tier, act, exp, diff, tolerancePct)
 		}
 	}
 	return nil

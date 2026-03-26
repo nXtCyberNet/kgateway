@@ -1,0 +1,5 @@
+name: 1-direct
+description: "Baseline scenario sending traffic directly to backends"
+target_rps: 50
+duration_seconds: 60
+concurrent_users: 5

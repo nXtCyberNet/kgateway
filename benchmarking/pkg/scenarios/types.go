@@ -3,11 +3,22 @@ package scenarios
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Scenario represents the load test configuration and backend requirements
+// BackendTier defines the resource constraints and behavior for a group of simulator pods.
+type BackendTier struct {
+	Name            string            `yaml:"name"`
+	CPULimit        string            `yaml:"cpuLimit"`
+	MemoryLimit     string            `yaml:"memoryLimit"`
+	ResponseDelayMs int               `yaml:"responseDelayMs"`
+	Replicas        int               `yaml:"replicas"`
+	Labels          map[string]string `yaml:"labels"`
+}
+
+// Scenario represents a single benchmark configuration.
 type Scenario struct {
 	Name                   string        `yaml:"name"`
 	Description            string        `yaml:"description"`
@@ -18,60 +29,50 @@ type Scenario struct {
 	DurationSeconds        int           `yaml:"durationSeconds"`
 	ConcurrentUsers        int           `yaml:"concurrentUsers"`
 	WarmupSeconds          int           `yaml:"warmupSeconds"`
-	BackendTiers           []BackendTier `yaml:"backendTiers"` // Tiers or pool config
+	BackendTiers           []BackendTier `yaml:"backendTiers"`
 }
 
-// BackendTier defines the configuration for a simulated LLM backend pool
-type BackendTier struct {
-	Name            string            `yaml:"name"`
-	CPULimit        string            `yaml:"cpuLimit"`
-	MemoryLimit     string            `yaml:"memoryLimit"`
-	ResponseDelayMs int               `yaml:"responseDelayMs"`
-	Replicas        int               `yaml:"replicas"`
-	Labels          map[string]string `yaml:"labels"`
-}
-
-// Results stores the output metrics of a specific benchmark run
+// Results holds the telemetry captured during a scenario run.
 type Results struct {
-	ScenarioName         string  `json:"scenarioName"`
-	DataPlane            string  `json:"dataPlane"`
-	Timestamp            string  `json:"timestamp"`
-	P50LatencyMs         float64 `json:"p50LatencyMs"`
-	P95LatencyMs         float64 `json:"p95LatencyMs"`
-	P99LatencyMs         float64 `json:"p99LatencyMs"`
-	MeanLatencyMs        float64 `json:"meanLatencyMs"`
-	TTFTMeanMs           float64 `json:"ttftMeanMs"`
-	TTFTp99Ms            float64 `json:"ttftP99Ms"`
-	ITLMeanUs            float64 `json:"itlMeanUs"`
-	ThroughputRPS        float64 `json:"throughputRps"`
-	ErrorRate            float64 `json:"errorRate"`
-	GatewayCPUMillicores float64 `json:"gatewayCpuMillicores"`
-	GatewayMemoryMB      float64 `json:"gatewayMemoryMb"`
-	EPPDecisionLatencyMs float64 `json:"eppDecisionLatencyMs"`
-	GatewayOverheadMs    float64 `json:"gatewayOverheadMs"`
+	ScenarioName         string    `json:"scenario_name"`
+	DataPlane            string    `json:"data_plane"` // "envoy" or "agentgateway"
+	Timestamp            time.Time `json:"timestamp"`
+	P50LatencyMs         float64   `json:"p50_latency_ms"`
+	P95LatencyMs         float64   `json:"p95_latency_ms"`
+	P99LatencyMs         float64   `json:"p99_latency_ms"`
+	MeanLatencyMs        float64   `json:"mean_latency_ms"`
+	TTFTMeanMs           float64   `json:"ttft_mean_ms"`
+	TTFTp99Ms            float64   `json:"ttft_p99_ms"`
+	ITLMeanUs            float64   `json:"itl_mean_us"`
+	ThroughputRPS        float64   `json:"throughput_rps"`
+	ErrorRate            float64   `json:"error_rate"`
+	GatewayCPUMillicores float64   `json:"gateway_cpu_millicores"`
+	GatewayMemoryMB      float64   `json:"gateway_memory_mb"`
+	EPPDecisionLatencyMs float64   `json:"epp_decision_latency_ms"`
+	GatewayOverheadMs    float64   `json:"gateway_overhead_ms"`
 }
 
-// RegressionResult represents the outcome of comparing a run to a baseline
+// RegressionResult represents the delta between current and baseline performance.
 type RegressionResult struct {
-	ScenarioName string  `json:"scenarioName"`
-	BaselineP99  float64 `json:"baselineP99"`
-	CurrentP99   float64 `json:"currentP99"`
-	DeltaPct     float64 `json:"deltaPct"`
+	ScenarioName string  `json:"scenario_name"`
+	BaselineP99  float64 `json:"baseline_p99"`
+	CurrentP99   float64 `json:"current_p99"`
+	DeltaPct     float64 `json:"delta_pct"`
 	Exceeded     bool    `json:"exceeded"`
 	Threshold    float64 `json:"threshold"`
 }
 
-// LoadFromYAML attempts to parse a given yaml file into a Scenario
+// LoadFromYAML reads a scenario definition from a file.
 func LoadFromYAML(path string) (*Scenario, error) {
-	bytes, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read scenario file: %w", err)
+		return nil, fmt.Errorf("failed to read scenario file %s: %w", path, err)
 	}
 
-	var sc Scenario
-	if err := yaml.Unmarshal(bytes, &sc); err != nil {
-		return nil, fmt.Errorf("unmarshal scenario file: %w", err)
+	var s Scenario
+	if err := yaml.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal scenario yaml: %w", err)
 	}
 
-	return &sc, nil
+	return &s, nil
 }

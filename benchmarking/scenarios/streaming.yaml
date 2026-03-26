@@ -1,4 +1,5 @@
 name: streaming
-description: SSE Streaming Test
-targetRps: 30
-durationSeconds: 180
+description: "Streaming scenario"
+target_rps: 20
+duration_seconds: 60
+concurrent_users: 5

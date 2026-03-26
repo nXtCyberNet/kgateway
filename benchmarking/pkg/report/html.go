@@ -3,113 +3,74 @@ package report
 import (
 	"fmt"
 	"os"
-	"strings"
+	"time"
 
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/scenarios"
 )
 
-// GenerateHTMLReport writes a self-contained inline-CSS HTML report containing benchmark results
+// GenerateHTMLReport generates a single-file performance report.
 func GenerateHTMLReport(results []*scenarios.Results, regressions []*scenarios.RegressionResult, outputPath string) error {
-	var sb strings.Builder
-
-	writeHTMLHeader(&sb)
-	writeTableContent(&sb, results)
-	writeRegressionContent(&sb, regressions)
-	writeHTMLFooter(&sb)
-
-	if err := os.WriteFile(outputPath, []byte(sb.String()), 0644); err != nil {
-		return fmt.Errorf("write html report to %s: %w", outputPath, err)
-	}
-
-	return nil
-}
-
-// writeHTMLHeader sets up the page layout and inline styles
-func writeHTMLHeader(sb *strings.Builder) {
-	sb.WriteString(`<!DOCTYPE html>
+	html := `<!DOCTYPE html>
 <html>
 <head>
-	<meta charset="utf-8">
-	<title>kgateway Benchmark Report</title>
-	<style>
-		body { font-family: -apple-system, sans-serif; margin: 40px; color: #333; }
-		h1, h2 { color: #111; }
-		table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-		th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-		th { background-color: #f5f5f5; }
-		.good { background-color: #e6ffed; }
-		.warn { background-color: #fffbdd; }
-		.bad { background-color: #ffeef0; }
-		.note { font-size: 0.9em; color: #666; margin-top: 40px; }
-	</style>
+    <title>kgateway Benchmarking Report</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; }
+        h1, h2 { color: #2c3e50; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background-color: #f8f9fa; }
+        .green { background-color: #d4edda; color: #155724; }
+        .yellow { background-color: #fff3cd; color: #856404; }
+        .red { background-color: #f8d7da; color: #721c24; font-weight: bold; }
+        .methodology { background-color: #f8f9fa; padding: 15px; border-left: 5px solid #007bff; font-size: 0.9em; }
+    </style>
 </head>
 <body>
-	<h1>kgateway Inference Routing - Performance Benchmark</h1>
-	<p>Generated benchmark results for Envoy vs Agentgateway dataplanes.</p>
+    <h1>kgateway Inference Routing Performance</h1>
+    <p>Generated at: ` + time.Now().Format(time.RFC1123) + `</p>
 
-	<h2>Results Summary</h2>
-	<table>
-		<tr>
-			<th>Scenario</th>
-			<th>P99 Latency (ms)</th>
-			<th>Throughput (RPS)</th>
-			<th>Overhead (ms)</th>
-			<th>CPU (m)</th>
-			<th>Memory (MB)</th>
-		</tr>
-`)
-}
+    <table>
+        <thead>
+            <tr>
+                <th>Scenario</th>
+                <th>P99 (ms)</th>
+                <th>Overhead (ms)</th>
+                <th>Throughput (RPS)</th>
+                <th>Gateway CPU</th>
+                <th>EPP Latency</th>
+            </tr>
+        </thead>
+        <tbody>`
 
-// writeTableContent formats the run results into the main data table
-func writeTableContent(sb *strings.Builder, results []*scenarios.Results) {
 	for _, r := range results {
-		overheadClass := "bad"
-		if r.GatewayOverheadMs < 5.0 {
-			overheadClass = "good"
-		} else if r.GatewayOverheadMs <= 15.0 {
-			overheadClass = "warn"
+		overheadClass := "green"
+		if r.GatewayOverheadMs > 15 {
+			overheadClass = "red"
+		} else if r.GatewayOverheadMs > 5 {
+			overheadClass = "yellow"
 		}
 
-		sb.WriteString(fmt.Sprintf(`
-		<tr>
-			<td>%s</td>
-			<td>%.2f</td>
-			<td>%.2f</td>
-			<td class="%s">%.2f</td>
-			<td>%.0f</td>
-			<td>%.0f</td>
-		</tr>`, r.ScenarioName, r.P99LatencyMs, r.ThroughputRPS, overheadClass, r.GatewayOverheadMs, r.GatewayCPUMillicores, r.GatewayMemoryMB))
-	}
-	sb.WriteString(`
-	</table>
-`)
-}
-
-// writeRegressionContent displays dynamic threshold breach warnings if encountered during validation
-func writeRegressionContent(sb *strings.Builder, regressions []*scenarios.RegressionResult) {
-	if len(regressions) == 0 {
-		sb.WriteString(`<p>No regressions detected against baseline.</p>`)
-		return
+		html += fmt.Sprintf(`
+            <tr>
+                <td>%s</td>
+                <td>%.2f</td>
+                <td class="%s">%.2f</td>
+                <td>%.1f</td>
+                <td>%.0fm</td>
+                <td>%.2fms</td>
+            </tr>`, r.ScenarioName, r.P99LatencyMs, overheadClass, r.GatewayOverheadMs, r.ThroughputRPS, r.GatewayCPUMillicores, r.EPPDecisionLatencyMs)
 	}
 
-	sb.WriteString(`<h2>Regressions Detected</h2><ul>`)
-	for _, reg := range regressions {
-		if reg.Exceeded {
-			sb.WriteString(fmt.Sprintf(`<li><strong>%s</strong>: P99 regression from %.2fms to %.2fms (%.2f%% increase, threshold %.2f%%)</li>`,
-				reg.ScenarioName, reg.BaselineP99, reg.CurrentP99, reg.DeltaPct, reg.Threshold))
-		}
-	}
-	sb.WriteString(`</ul>`)
-}
+	html += `
+        </tbody>
+    </table>
 
-// writeHTMLFooter appends methodology context and closes tags
-func writeHTMLFooter(sb *strings.Builder) {
-	sb.WriteString(`
-	<div class="note">
-		<h3>Methodology</h3>
-		<p>Benchmark measures full round-trip time vs theoretical bare-metal simulator time to compute the "gateway tax". 
-		Green: &lt;5ms. Yellow: 5-15ms. Red: &gt;15ms latency overhead.</p>
-	</div>
+    <div class="methodology">
+        <strong>Methodology Note:</strong> Latency overhead is calculated as the difference between the current scenario's P99 and the S1-TCP-Baseline P99. Gateway CPU reflects millicores consumed per 100 RPS.
+    </div>
 </body>
-</html>`)
+</html>`
+
+	return os.WriteFile(outputPath, []byte(html), 0644)
 }

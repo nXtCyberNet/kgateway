@@ -1,11 +1,11 @@
 package scenarios
 
-// S3InferenceRouting returns the configuration for Scenario 3: Full inference routing.
-// Evaluates EPP scaling against three backend tiers using body parsing for model extraction.
-func S3InferenceRouting() *Scenario {
+// GetInferenceRoutingScenario returns the S3 (Full EPP) configuration.
+// This tests the full gateway tax including request body parsing and EPP header injection.
+func GetInferenceRoutingScenario() *Scenario {
 	return &Scenario{
-		Name:                   "inference-routing",
-		Description:            "Full EPP active with body parsing, routing to 3 tiers.",
+		Name:                   "S3-Inference-Routing",
+		Description:            "Gateway enabled with full EPP and request body parsing",
 		GatewayClass:           "kgateway",
 		EnableInferenceRouting: true,
 		EnableBodyParsing:      true,
@@ -20,7 +20,7 @@ func S3InferenceRouting() *Scenario {
 				MemoryLimit:     "4Gi",
 				ResponseDelayMs: 50,
 				Replicas:        2,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "large"},
+				Labels:          map[string]string{"tier": "large", "app": "llm-d-sim"},
 			},
 			{
 				Name:            "tier-medium",
@@ -28,15 +28,15 @@ func S3InferenceRouting() *Scenario {
 				MemoryLimit:     "2Gi",
 				ResponseDelayMs: 100,
 				Replicas:        1,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "medium"},
+				Labels:          map[string]string{"tier": "medium", "app": "llm-d-sim"},
 			},
 			{
 				Name:            "tier-small",
-				CPULimit:        "0.5",
+				CPULimit:        "500m",
 				MemoryLimit:     "512Mi",
 				ResponseDelayMs: 200,
 				Replicas:        1,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "small"},
+				Labels:          map[string]string{"tier": "small", "app": "llm-d-sim"},
 			},
 		},
 	}

@@ -2,20 +2,18 @@ package scenarios
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// S4Streaming returns Scenario 4 configuration: SSE testing.
-func S4Streaming() *Scenario {
+// GetStreamingScenario returns the S4 (SSE Streaming) configuration.
+func GetStreamingScenario() *Scenario {
 	return &Scenario{
-		Name:                   "streaming",
-		Description:            "SSE event stream test measuring TTFT and ITL across inference connections.",
+		Name:                   "S4-Streaming",
+		Description:            "Inference routing for SSE streaming requests",
 		GatewayClass:           "kgateway",
 		EnableInferenceRouting: true,
 		EnableBodyParsing:      true,
@@ -30,25 +28,27 @@ func S4Streaming() *Scenario {
 				MemoryLimit:     "4Gi",
 				ResponseDelayMs: 50,
 				Replicas:        2,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "large"},
+				Labels:          map[string]string{"tier": "large", "app": "llm-d-sim"},
 			},
 		},
 	}
 }
 
-// MeasureStreamingMetrics consumes an SSE endpoint to calculate TTFT and ITL
-func MeasureStreamingMetrics(url, model string) (ttftMs float64, itlMeanUs float64, err error) {
-	req, err := createStreamingRequest(url, model)
+// MeasureStreamingMetrics sends a single SSE request and calculates TTFT and ITL.
+// TTFT: Time to first data: chunk.
+// ITL: Inter-Token Latency (mean time between subsequent chunks).
+func MeasureStreamingMetrics(ctx context.Context, url, model string) (ttftMs float64, itlMeanUs float64, err error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(fmt.Sprintf(`{"model": "%s", "stream": true}`, model)))
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 
-	client := &http.Client{}
 	start := time.Now()
-	
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, 0, fmt.Errorf("do streaming req: %w", err)
+		return 0, 0, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -56,67 +56,38 @@ func MeasureStreamingMetrics(url, model string) (ttftMs float64, itlMeanUs float
 		return 0, 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	return consumeSSEStream(resp.Body, start)
-}
-
-// createStreamingRequest builds the HTTP POST request customized for SSE chunks
-func createStreamingRequest(url, model string) (*http.Request, error) {
-	reqBody := []byte(fmt.Sprintf(`{"model":"%s","stream":true,"messages":[{"role":"user","content":"hello"}]}`, model))
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("create streaming req: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	return req, nil
-}
-
-// consumeSSEStream reads the response body line by line recording the deltas of chunk arrival intervals
-func consumeSSEStream(body io.Reader, startTime time.Time) (ttftMs float64, itlMeanUs float64, err error) {
-	scanner := bufio.NewScanner(body)
-	var chunkTimes []time.Time
+	scanner := bufio.NewScanner(resp.Body)
+	var firstChunkReceived bool
+	var lastChunkTime time.Time
+	var deltas []time.Duration
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" || !strings.HasPrefix(line, "data: ") {
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 
-		msg := strings.TrimPrefix(line, "data: ")
-		if msg == "[DONE]" {
-			break
-		}
-
-		// parse chunk out briefly to simulate proper payload verification
-		var dummy map[string]interface{}
-		_ = json.Unmarshal([]byte(msg), &dummy)
-
 		now := time.Now()
-		if len(chunkTimes) == 0 {
-			ttftMs = float64(now.Sub(startTime).Milliseconds())
+		if !firstChunkReceived {
+			ttftMs = float64(now.Sub(start).Milliseconds())
+			firstChunkReceived = true
+		} else {
+			deltas = append(deltas, now.Sub(lastChunkTime))
 		}
-		chunkTimes = append(chunkTimes, now)
+		lastChunkTime = now
 	}
 
 	if err := scanner.Err(); err != nil {
-		return 0, 0, fmt.Errorf("scan sse line: %w", err)
+		return 0, 0, fmt.Errorf("scanner error: %w", err)
 	}
 
-	itlMeanUs = calculateMeanITL(chunkTimes)
+	if len(deltas) > 0 {
+		var total time.Duration
+		for _, d := range deltas {
+			total += d
+		}
+		itlMeanUs = float64(total.Microseconds()) / float64(len(deltas))
+	}
+
 	return ttftMs, itlMeanUs, nil
-}
-
-// calculateMeanITL finds the average delta (Inter-Token Latency) among all sequential timestamps
-func calculateMeanITL(chunkTimes []time.Time) float64 {
-	if len(chunkTimes) <= 1 {
-		return 0
-	}
-
-	var totalDelta time.Duration
-	for i := 1; i < len(chunkTimes); i++ {
-		totalDelta += chunkTimes[i].Sub(chunkTimes[i-1])
-	}
-	
-	return float64(totalDelta.Microseconds()) / float64(len(chunkTimes)-1)
 }

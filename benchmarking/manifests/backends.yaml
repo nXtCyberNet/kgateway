@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-d-sim-large
+  labels:
+    app: llm-d-sim
+    tier: large
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-d-sim
+      tier: large
+  template:
+    metadata:
+      labels:
+        app: llm-d-sim
+        tier: large
+    spec:
+      containers:
+      - name: sim
+        image: mendhak/http-https-echo:31
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-d-sim-large
+spec:
+  selector:
+    app: llm-d-sim
+    tier: large
+  ports:
+  - port: 8080
+    targetPort: 8080

@@ -1,12 +1,27 @@
 package scenarios
 
-// S2HeaderRouting returns the configuration for Scenario 2: Standard header-based HTTP routing.
-// No inference routing or body parsing overhead. Routes via x-model-name.
-func S2HeaderRouting() *Scenario {
-	s := S1Baseline()
-	s.Name = "header-routing"
-	s.Description = "Gateway enabled, standard HTTP header routing via x-model-name. No body parsing."
-	s.EnableInferenceRouting = false
-	s.EnableBodyParsing = false
-	return s
+// GetHeaderRoutingScenario returns the S2 (Standard HTTP) configuration.
+// It uses standard HTTP header matching (x-model-name) without inference-specific logic.
+func GetHeaderRoutingScenario() *Scenario {
+	return &Scenario{
+		Name:                   "S2-Header-Routing",
+		Description:            "Gateway enabled with standard HTTP header routing",
+		GatewayClass:           "kgateway",
+		EnableInferenceRouting: false,
+		EnableBodyParsing:      false,
+		TargetRPS:              100,
+		DurationSeconds:        120,
+		ConcurrentUsers:        10,
+		WarmupSeconds:          60,
+		BackendTiers: []BackendTier{
+			{
+				Name:            "tier-large",
+				CPULimit:        "4",
+				MemoryLimit:     "4Gi",
+				ResponseDelayMs: 50,
+				Replicas:        1,
+				Labels:          map[string]string{"tier": "large", "app": "llm-d-sim"},
+			},
+		},
+	}
 }

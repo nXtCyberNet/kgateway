@@ -1,18 +1,17 @@
 package scenarios
 
-// S1Baseline returns the configuration for Scenario 1: TCP baseline without gateway
-// routing logic. It defines a direct connection to a single large sim pod.
-func S1Baseline() *Scenario {
+// GetBaselineScenario returns the S1 (TCP Baseline) configuration.
+// This scenario bypasses the gateway to establish the raw performance of the simulator.
+func GetBaselineScenario() *Scenario {
 	return &Scenario{
-		Name:                   "baseline",
-		Description:            "TCP baseline without gateway routing, direct to large sim pod.",
-		GatewayClass:           "kgateway",
-		EnableInferenceRouting: false,
-		EnableBodyParsing:      false,
+		Name:                   "S1-TCP-Baseline",
+		Description:            "Direct connection to simulator pod bypassing kgateway",
 		TargetRPS:              100,
 		DurationSeconds:        120,
 		ConcurrentUsers:        10,
 		WarmupSeconds:          60,
+		EnableInferenceRouting: false,
+		EnableBodyParsing:      false,
 		BackendTiers: []BackendTier{
 			{
 				Name:            "tier-large",
@@ -20,7 +19,7 @@ func S1Baseline() *Scenario {
 				MemoryLimit:     "4Gi",
 				ResponseDelayMs: 50,
 				Replicas:        1,
-				Labels:          map[string]string{"app": "llm-d-sim", "tier": "large"},
+				Labels:          map[string]string{"tier": "large", "app": "llm-d-sim"},
 			},
 		},
 	}
