@@ -44,11 +44,11 @@ func GenerateHTMLReport(results []*scenarios.Results, regressions []*scenarios.R
         <tbody>`
 
 	for _, r := range results {
-		overheadClass := "green"
-		if r.GatewayOverheadMs > 15 {
-			overheadClass = "red"
-		} else if r.GatewayOverheadMs > 5 {
-			overheadClass = "yellow"
+		errorClass := "green"
+		if r.ErrorRate > 0.05 {
+			errorClass = "red"
+		} else if r.ErrorRate > 0.01 {
+			errorClass = "yellow"
 		}
 
 		html += fmt.Sprintf(`
@@ -57,9 +57,9 @@ func GenerateHTMLReport(results []*scenarios.Results, regressions []*scenarios.R
                 <td>%.2f</td>
                 <td class="%s">%.2f</td>
                 <td>%.1f</td>
-                <td>%.0fm</td>
+                <td>%d</td>
                 <td>%.2fms</td>
-            </tr>`, r.ScenarioName, r.P99LatencyMs, overheadClass, r.GatewayOverheadMs, r.ThroughputRPS, r.GatewayCPUMillicores, r.EPPDecisionLatencyMs)
+            </tr>`, r.ScenarioName, r.Latency.P99, errorClass, r.ErrorRate, 0.0, r.LoadShedCount, r.Streaming.TTFT)
 	}
 
 	html += `

@@ -1,93 +1,191 @@
+// pkg/scenarios/streaming.go
+// Copyright 2026 The kgateway Authors. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package scenarios
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 )
 
-// GetStreamingScenario returns the S4 (SSE Streaming) configuration.
-func GetStreamingScenario() *Scenario {
+// ExpectedFairnessDistribution is the target traffic share per tier (used by S5).
+// Exported so epp_fairness.go and the runner can reference it without magic numbers.
+var ExpectedFairnessDistribution = map[string]float64{
+	"tier-large":  70.0,
+	"tier-medium": 20.0,
+	"tier-small":  10.0,
+}
+
+// FairnessTolerancePct is the allowed deviation from ExpectedFairnessDistribution.
+const FairnessTolerancePct = 5.0
+
+// S4Streaming returns the SSE streaming scenario. Lower RPS and longer duration give
+// enough steady-state stream data for statistically meaningful TTFT and ITL measurements.
+func S4Streaming() *Scenario {
 	return &Scenario{
-		Name:                   "S4-Streaming",
-		Description:            "Inference routing for SSE streaming requests",
+		Name:                   "streaming",
+		Description:            "SSE streaming load — measures TTFT and inter-token latency under EPP routing",
 		GatewayClass:           "kgateway",
 		EnableInferenceRouting: true,
 		EnableBodyParsing:      true,
 		TargetRPS:              30,
 		DurationSeconds:        180,
-		ConcurrentUsers:        5,
-		WarmupSeconds:          30,
+		ConcurrentUsers:        10,
+		WarmupSeconds:          60,
 		BackendTiers: []BackendTier{
 			{
-				Name:            "tier-large",
-				CPULimit:        "4",
-				MemoryLimit:     "4Gi",
-				ResponseDelayMs: 50,
-				Replicas:        2,
-				Labels:          map[string]string{"tier": "large", "app": "llm-d-sim"},
+				Name:                    "tier-large",
+				CPULimit:                "4",
+				MemoryLimit:             "4Gi",
+				ResponseDelayMs:         50,
+				Replicas:                2,
+				Labels:                  map[string]string{"app": "llm-d-sim", "tier": "large"},
+				SimulatedKVCachePercent: 20,
 			},
 		},
 	}
 }
 
-// MeasureStreamingMetrics sends a single SSE request and calculates TTFT and ITL.
-// TTFT: Time to first data: chunk.
-// ITL: Inter-Token Latency (mean time between subsequent chunks).
-func MeasureStreamingMetrics(ctx context.Context, url, model string) (ttftMs float64, itlMeanUs float64, err error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(fmt.Sprintf(`{"model": "%s", "stream": true}`, model)))
+// StreamingResult holds timing data for a single SSE request.
+type StreamingResult struct {
+	TTFTMs    float64
+	ITLMeanUs float64
+}
+
+// MeasureStreamingMetrics sends a single SSE request to url for the given model,
+// records TTFT (time to first data: chunk) and mean ITL (mean delta between chunks).
+func MeasureStreamingMetrics(ctx context.Context, url, model string) (*StreamingResult, error) {
+	req, err := createStreamingRequest(ctx, url, model)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to build streaming request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
 
 	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, 0, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("streaming request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, fmt.Errorf("unexpected status %d from streaming endpoint", resp.StatusCode)
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	var firstChunkReceived bool
-	var lastChunkTime time.Time
-	var deltas []time.Duration
+	ttftMs, itlMeanUs, err := consumeSSEStream(resp, start)
+	if err != nil {
+		return nil, fmt.Errorf("error consuming SSE stream: %w", err)
+	}
 
+	return &StreamingResult{TTFTMs: ttftMs, ITLMeanUs: itlMeanUs}, nil
+}
+
+// MeasureStreamingMetricsSampled runs MeasureStreamingMetrics n times and returns
+// the mean TTFT and ITL across successful samples, reducing measurement noise.
+func MeasureStreamingMetricsSampled(ctx context.Context, url, model string, n int) (ttftMeanMs, itlMeanUs float64, err error) {
+	var ttftSum, itlSum float64
+	var successes int
+
+	for i := 0; i < n; i++ {
+		select {
+		case <-ctx.Done():
+			return 0, 0, fmt.Errorf("sampling cancelled after %d samples: %w", i, ctx.Err())
+		default:
+		}
+
+		result, sampleErr := MeasureStreamingMetrics(ctx, url, model)
+		if sampleErr != nil {
+			continue
+		}
+		ttftSum += result.TTFTMs
+		itlSum += result.ITLMeanUs
+		successes++
+	}
+
+	if successes == 0 {
+		return 0, 0, fmt.Errorf("all %d streaming samples failed", n)
+	}
+
+	return ttftSum / float64(successes), itlSum / float64(successes), nil
+}
+
+// createStreamingRequest builds an HTTP POST for the OpenAI-compatible /v1/completions
+// endpoint with stream:true. The Accept and Content-Type headers are both required —
+// Accept: text/event-stream tells the simulator to send SSE chunks rather than a
+// single buffered JSON response.
+func createStreamingRequest(ctx context.Context, url, model string) (*http.Request, error) {
+	body := map[string]interface{}{
+		"model":      model,
+		"prompt":     "Tell me about AI gateway routing.",
+		"max_tokens": 100,
+		"stream":     true,
+	}
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/completions", bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	return req, nil
+}
+
+// consumeSSEStream reads SSE chunks from resp line by line. It records the time of
+// the first data: chunk as TTFT and the mean delta between subsequent chunks as ITL.
+func consumeSSEStream(resp *http.Response, reqStart time.Time) (ttftMs float64, itlMeanUs float64, err error) {
+	var chunkTimestamps []time.Time
+
+	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-
-		now := time.Now()
-		if !firstChunkReceived {
-			ttftMs = float64(now.Sub(start).Milliseconds())
-			firstChunkReceived = true
-		} else {
-			deltas = append(deltas, now.Sub(lastChunkTime))
+		// Skip the SSE stream terminator.
+		if strings.TrimSpace(strings.TrimPrefix(line, "data:")) == "[DONE]" {
+			break
 		}
-		lastChunkTime = now
+		chunkTimestamps = append(chunkTimestamps, time.Now())
 	}
 
 	if err := scanner.Err(); err != nil {
-		return 0, 0, fmt.Errorf("scanner error: %w", err)
+		return 0, 0, fmt.Errorf("error reading SSE stream: %w", err)
 	}
 
-	if len(deltas) > 0 {
-		var total time.Duration
-		for _, d := range deltas {
-			total += d
-		}
-		itlMeanUs = float64(total.Microseconds()) / float64(len(deltas))
+	if len(chunkTimestamps) == 0 {
+		return 0, 0, fmt.Errorf("no data: chunks received — check Accept: text/event-stream header")
 	}
+
+	ttftMs = float64(chunkTimestamps[0].Sub(reqStart).Milliseconds())
+	itlMeanUs = calculateMeanITL(chunkTimestamps)
 
 	return ttftMs, itlMeanUs, nil
+}
+
+// calculateMeanITL returns the mean inter-token latency in microseconds across
+// consecutive chunk timestamps. Returns 0 when fewer than 2 chunks were received.
+func calculateMeanITL(timestamps []time.Time) float64 {
+	if len(timestamps) < 2 {
+		return 0
+	}
+
+	var totalUs float64
+	for i := 1; i < len(timestamps); i++ {
+		totalUs += float64(timestamps[i].Sub(timestamps[i-1]).Microseconds())
+	}
+
+	return totalUs / float64(len(timestamps)-1)
 }

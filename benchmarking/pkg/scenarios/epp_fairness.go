@@ -1,45 +1,89 @@
+// pkg/scenarios/epp_fairness.go
+// Copyright 2026 The kgateway Authors. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package scenarios
 
-import (
-	"fmt"
-	"math"
-)
+import "fmt"
 
-// GetEPPFairnessScenario returns the S5 (Fairness/Distribution) configuration.
-func GetEPPFairnessScenario() *Scenario {
+// S5EPPFairness returns the EPP fairness scenario. Three tiers with deliberately skewed
+// KV cache pressure (10% / 50% / 90%) and response delays (50ms / 100ms / 200ms) force
+// the EPP to make non-trivial routing decisions. CheckFairness then validates that actual
+// traffic distribution matches the expected 70/20/10 weights within FairnessTolerancePct.
+func S5EPPFairness() *Scenario {
 	return &Scenario{
-		Name:                   "S5-EPP-Fairness",
-		Description:            "Verifies traffic distribution across heterogeneous tiers",
+		Name:                   "epp-fairness",
+		Description:            "EPP weighted routing fairness across three tiers with skewed KV cache pressure",
 		GatewayClass:           "kgateway",
 		EnableInferenceRouting: true,
 		EnableBodyParsing:      true,
 		TargetRPS:              100,
 		DurationSeconds:        120,
 		ConcurrentUsers:        10,
-		WarmupSeconds:          30,
+		WarmupSeconds:          60,
 		BackendTiers: []BackendTier{
-			{Name: "tier-large", CPULimit: "4", ResponseDelayMs: 50, Replicas: 2},
-			{Name: "tier-medium", CPULimit: "2", ResponseDelayMs: 100, Replicas: 1},
-			{Name: "tier-small", CPULimit: "0.5", ResponseDelayMs: 200, Replicas: 1},
+			{
+				Name:                    "tier-large",
+				CPULimit:                "4",
+				MemoryLimit:             "4Gi",
+				ResponseDelayMs:         50,
+				Replicas:                1,
+				Labels:                  map[string]string{"app": "llm-d-sim", "tier": "large"},
+				SimulatedKVCachePercent: 10,
+			},
+			{
+				Name:                    "tier-medium",
+				CPULimit:                "2",
+				MemoryLimit:             "2Gi",
+				ResponseDelayMs:         100,
+				Replicas:                1,
+				Labels:                  map[string]string{"app": "llm-d-sim", "tier": "medium"},
+				SimulatedKVCachePercent: 50,
+			},
+			{
+				Name:                    "tier-small",
+				CPULimit:                "500m",
+				MemoryLimit:             "512Mi",
+				ResponseDelayMs:         200,
+				Replicas:                1,
+				Labels:                  map[string]string{"app": "llm-d-sim", "tier": "small"},
+				SimulatedKVCachePercent: 90,
+			},
 		},
 	}
 }
 
-// CheckFairness verifies that traffic is distributed close to expected ratios.
-// actual: map of tier name to percentage (0.0-100.0)
-// expected: map of tier name to expected percentage
-// tolerancePct: allowed deviation (e.g., 5.0 for 5%)
-func CheckFairness(actual map[string]float64, expected map[string]float64, tolerancePct float64) error {
-	for tier, exp := range expected {
-		act, ok := actual[tier]
+// CheckFairness validates that the actual per-tier traffic distribution matches expected
+// weights within tolerancePct. actual and expected are maps of tier name → percentage (0-100).
+// Returns an error listing every tier that exceeded the tolerance.
+func CheckFairness(actual, expected map[string]float64, tolerancePct float64) error {
+	var violations []string
+
+	for tier, want := range expected {
+		got, ok := actual[tier]
 		if !ok {
-			return fmt.Errorf("missing data for expected tier: %s", tier)
+			violations = append(violations, fmt.Sprintf("%s: expected %.1f%% but got no data", tier, want))
+			continue
 		}
-		diff := math.Abs(act - exp)
-		if diff > tolerancePct {
-			return fmt.Errorf("tier %s distribution mismatch: got %.2f%%, want %.2f%% (diff %.2f%% exceeds tolerance %.2f%%)",
-				tier, act, exp, diff, tolerancePct)
+		delta := got - want
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > tolerancePct {
+			violations = append(violations, fmt.Sprintf(
+				"%s: expected %.1f%% got %.1f%% (delta %.1f%% exceeds tolerance %.1f%%)",
+				tier, want, got, delta, tolerancePct,
+			))
 		}
 	}
-	return nil
+
+	if len(violations) == 0 {
+		return nil
+	}
+
+	result := "EPP fairness check failed:\n"
+	for _, v := range violations {
+		result += "  - " + v + "\n"
+	}
+	return fmt.Errorf("%s", result)
 }

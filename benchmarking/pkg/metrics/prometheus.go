@@ -1,110 +1,171 @@
+// benchmarking/pkg/metrics/prometheus.go
+// Copyright 2026 The kgateway Authors. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package metrics
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"strconv"
+	"math"
+	"time"
+
+	"github.com/prometheus/client_golang/api"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
+
+	"github.com/kgateway-dev/kgateway/benchmarking/pkg/scenarios"
 )
 
-// PrometheusClient provides an interface to query Prometheus metrics.
+// PrometheusClient is a thin wrapper around the official Prometheus HTTP API client.
+// It provides scoped, data-plane-aware queries so that benchmarks never suffer from
+// "metric bleed" in a shared Kind cluster.
 type PrometheusClient struct {
-	BaseURL string
+	api v1.API
 }
 
-// GatewayMetrics holds raw performance and resource usage data for the gateway.
-type GatewayMetrics struct {
-	P99Latency float64
-	P95Latency float64
-	P50Latency float64
-	CPUUsage   float64
-	MemoryMB   float64
-	EPPLatency float64
+// NewPrometheusClient creates a new Prometheus client pointing at the given address.
+// The address is usually the Prometheus service inside the Kind cluster.
+func NewPrometheusClient(address string) (*PrometheusClient, error) {
+	pc, err := api.NewClient(api.Config{Address: address})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create prometheus client: %w", err)
+	}
+	return &PrometheusClient{api: v1.NewAPI(pc)}, nil
 }
 
-type prometheusResponse struct {
-	Status string `json:"status"`
-	Data   struct {
-		ResultType string `json:"resultType"`
-		Result     []struct {
-			Value []interface{} `json:"value"`
-		} `json:"result"`
-	} `json:"data"`
+// ScrapeGatewayMetrics collects all core latency, error, resource, and GenAI-specific
+// metrics for a completed scenario run. It automatically switches PromQL queries
+// based on the data plane ("envoy" vs "agentgateway") and strictly scopes everything
+// by namespace and service/pod to prevent cross-benchmark contamination.
+func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, service, dataPlane string, scrapeDuration time.Duration) (*scenarios.Results, error) {
+	res := &scenarios.Results{
+		ScenarioName: service,
+		DataPlane:    dataPlane,
+		Timestamp:    time.Now(),
+	}
+
+	dStr := scrapeDuration.String()
+
+	// ------------------------------------------------------------------
+	// 1. Latency percentiles (P50 / P95 / P99)
+	// ------------------------------------------------------------------
+	latencyQueryTpl := p.latencyQueryTemplate(dataPlane)
+	res.P50LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.50, namespace, service, dStr))
+	res.P95LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.95, namespace, service, dStr))
+	res.P99LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.99, namespace, service, dStr))
+
+	// ------------------------------------------------------------------
+	// 2. Error rate
+	// ------------------------------------------------------------------
+	errRate, err := p.errorRateQuery(ctx, namespace, service, dataPlane, dStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query error rate: %w", err)
+	}
+	res.ErrorRate = errRate
+
+	// ------------------------------------------------------------------
+	// 3. Gateway resource usage (CPU in millicores, Memory in MiB)
+	// ------------------------------------------------------------------
+	res.GatewayCPUMillicores = p.queryInstant(ctx, fmt.Sprintf(
+		`sum(rate(container_cpu_usage_seconds_total{namespace="%s", pod=~".*kgateway.*|.*gateway.*"}[%s])) * 1000`,
+		namespace, dStr))
+	res.GatewayMemoryMB = p.queryInstant(ctx, fmt.Sprintf(
+		`sum(container_memory_working_set_bytes{namespace="%s", pod=~".*kgateway.*|.*gateway.*"}) / 1024 / 1024`,
+		namespace))
+
+	// ------------------------------------------------------------------
+	// 4. EPP decision latency (common to both data planes when EPP is enabled)
+	// ------------------------------------------------------------------
+	res.EPPDecisionLatencyMs = p.queryInstant(ctx, fmt.Sprintf(
+		`histogram_quantile(0.99, sum by (le) (rate(epp_endpoint_selection_duration_seconds_bucket{namespace="%s"}[%s]))) * 1000`,
+		namespace, dStr))
+
+	// ------------------------------------------------------------------
+	// 5. GenAI streaming metrics (TTFT / ITL) — only available on agentgateway
+	// ------------------------------------------------------------------
+	if dataPlane == "agentgateway" {
+		res.TTFTMeanMs = p.queryInstant(ctx, fmt.Sprintf(
+			`avg(agentgateway_latency_ttft_seconds{namespace="%s"}) * 1000`, namespace))
+		res.TTFTp99Ms = p.queryInstant(ctx, fmt.Sprintf(
+			`histogram_quantile(0.99, sum by (le) (rate(agentgateway_latency_ttft_seconds_bucket{namespace="%s"}[%s]))) * 1000`,
+			namespace, dStr))
+		res.ITLMeanUs = p.queryInstant(ctx, fmt.Sprintf(
+			`avg(agentgateway_latency_itl_seconds{namespace="%s"}) * 1000000`, namespace))
+	}
+
+	return res, nil
 }
 
-// QueryInstant executes a Prometheus instant query and returns the first float result.
-func (p *PrometheusClient) QueryInstant(ctx context.Context, query string) (float64, error) {
-	u, err := url.Parse(fmt.Sprintf("%s/api/v1/query", p.BaseURL))
+// ScrapeTierDistribution returns the percentage distribution of requests across
+// backend tiers (large/medium/small). Used by the EPP fairness scenario.
+func (p *PrometheusClient) ScrapeTierDistribution(ctx context.Context, namespace string, duration time.Duration) (map[string]float64, error) {
+	query := fmt.Sprintf(`sum by (tier) (rate(agentgateway_requests_total{namespace="%s"}[%s])) / sum(rate(agentgateway_requests_total{namespace="%s"}[%s])) * 100`,
+		namespace, duration.String(), namespace, duration.String())
+
+	val, _, err := p.api.Query(ctx, query, time.Now())
 	if err != nil {
-		return 0, err
-	}
-	q := u.Query()
-	q.Set("query", query)
-	u.RawQuery = q.Encode()
-
-	req, _ := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("prometheus request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	var pr prometheusResponse
-	if err := json.Unmarshal(body, &pr); err != nil {
-		return 0, fmt.Errorf("failed to unmarshal prometheus response: %w", err)
+		return nil, fmt.Errorf("failed to query tier distribution: %w", err)
 	}
 
-	if len(pr.Data.Result) == 0 {
-		return 0, nil
+	dist := make(map[string]float64)
+	if vector, ok := val.(model.Vector); ok {
+		for _, sample := range vector {
+			if tier := string(sample.Metric["tier"]); tier != "" {
+				dist[tier] = float64(sample.Value)
+			}
+		}
 	}
-
-	valStr := pr.Data.Result[0].Value[1].(string)
-	val, err := strconv.ParseFloat(valStr, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse result value %s: %w", valStr, err)
-	}
-
-	return val, nil
+	return dist, nil
 }
 
-// ScrapeGatewayMetrics gathers performance metrics for a specific kgateway instance.
-func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, podName string) (*GatewayMetrics, error) {
-	m := &GatewayMetrics{}
-	var err error
+// latencyQueryTemplate returns the correct PromQL template for the given data plane.
+func (p *PrometheusClient) latencyQueryTemplate(dataPlane string) string {
+	if dataPlane == "envoy" {
+		// Envoy cluster names are dynamic (e.g. outbound|8080||llm-d-sim-large.default.svc.cluster.local)
+		return `histogram_quantile(%g, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name=~".*%s.*", namespace="%s"}[%s])))`
+	}
+	// agentgateway (Rust) uses standard histogram labels
+	return `histogram_quantile(%g, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{namespace="%s", service="%s"}[%s])))`
+}
 
-	m.P99Latency, err = p.QueryInstant(ctx, `histogram_quantile(0.99, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket[1m])))`)
-	if err != nil {
-		return nil, err
+// errorRateQuery builds and executes the error-rate query for the selected data plane.
+func (p *PrometheusClient) errorRateQuery(ctx context.Context, namespace, service, dataPlane, duration string) (float64, error) {
+	var q string
+	if dataPlane == "envoy" {
+		q = fmt.Sprintf(`sum(rate(envoy_cluster_upstream_rq_xx{envoy_cluster_name=~".*%s.*", namespace="%s", code=~"4..|5.."}[%s])) / sum(rate(envoy_cluster_upstream_rq_total{envoy_cluster_name=~".*%s.*", namespace="%s"}[%s]))`,
+			service, namespace, duration, service, namespace, duration)
+	} else {
+		q = fmt.Sprintf(`sum(rate(agentgateway_requests_total{namespace="%s", service="%s", code=~"4..|5.."}[%s])) / sum(rate(agentgateway_requests_total{namespace="%s", service="%s"}[%s]))`,
+			namespace, service, duration, namespace, service, duration)
 	}
 
-	m.P95Latency, err = p.QueryInstant(ctx, `histogram_quantile(0.95, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket[1m])))`)
-	if err != nil {
-		return nil, err
-	}
+	return p.queryWithRetry(ctx, q)
+}
 
-	m.P50Latency, err = p.QueryInstant(ctx, `histogram_quantile(0.50, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket[1m])))`)
-	if err != nil {
-		return nil, err
+// queryWithRetry executes a PromQL query with exponential-backoff retries.
+// Returns the first non-zero value or the last result after max attempts.
+func (p *PrometheusClient) queryWithRetry(ctx context.Context, query string) (float64, error) {
+	const attempts = 3
+	for i := 0; i < attempts; i++ {
+		val := p.queryInstant(ctx, query)
+		if val > 0 || i == attempts-1 {
+			return val, nil
+		}
+		time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second)
 	}
+	return 0, nil
+}
 
-	m.CPUUsage, err = p.QueryInstant(ctx, fmt.Sprintf(`rate(container_cpu_usage_seconds_total{namespace="%s",pod=~"kgateway.*"}[1m]) * 1000`, namespace))
-	if err != nil {
-		return nil, err
+// queryInstant is the low-level helper that executes a PromQL instant query.
+// It returns 0 on any error (so the benchmark never aborts on a transient scrape issue).
+func (p *PrometheusClient) queryInstant(ctx context.Context, query string) float64 {
+	val, _, err := p.api.Query(ctx, query, time.Now())
+	if err != nil || val == nil {
+		return 0
 	}
-
-	m.MemoryMB, err = p.QueryInstant(ctx, fmt.Sprintf(`container_memory_working_set_bytes{namespace="%s",pod=~"kgateway.*"} / 1024 / 1024`, namespace))
-	if err != nil {
-		return nil, err
+	if vector, ok := val.(model.Vector); ok && len(vector) > 0 {
+		return float64(vector[0].Value)
 	}
-
-	m.EPPLatency, err = p.QueryInstant(ctx, `histogram_quantile(0.99, sum by (le) (rate(epp_endpoint_selection_duration_seconds_bucket[1m]))) * 1000`)
-	if err != nil {
-		return nil, err
-	}
-
-	return m, nil
+	return 0
 }

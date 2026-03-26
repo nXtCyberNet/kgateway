@@ -1,25 +1,31 @@
+// pkg/scenarios/baseline.go
+// Copyright 2026 The kgateway Authors. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package scenarios
 
-// GetBaselineScenario returns the S1 (TCP Baseline) configuration.
-// This scenario bypasses the gateway to establish the raw performance of the simulator.
-func GetBaselineScenario() *Scenario {
+// S1Baseline returns the TCP baseline scenario: no inference extensions, direct L7 routing
+// to a single tier-large backend. This is the performance floor every other scenario is
+// compared against to calculate GatewayOverheadMs.
+func S1Baseline() *Scenario {
 	return &Scenario{
-		Name:                   "S1-TCP-Baseline",
-		Description:            "Direct connection to simulator pod bypassing kgateway",
+		Name:                   "baseline",
+		Description:            "Direct L7 routing without inference extensions — establishes the performance floor",
+		GatewayClass:           "kgateway",
+		EnableInferenceRouting: false,
+		EnableBodyParsing:      false,
 		TargetRPS:              100,
 		DurationSeconds:        120,
 		ConcurrentUsers:        10,
 		WarmupSeconds:          60,
-		EnableInferenceRouting: false,
-		EnableBodyParsing:      false,
 		BackendTiers: []BackendTier{
 			{
 				Name:            "tier-large",
 				CPULimit:        "4",
 				MemoryLimit:     "4Gi",
 				ResponseDelayMs: 50,
-				Replicas:        1,
-				Labels:          map[string]string{"tier": "large", "app": "llm-d-sim"},
+				Replicas:        2,
+				Labels:          map[string]string{"app": "llm-d-sim", "tier": "large"},
 			},
 		},
 	}
