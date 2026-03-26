@@ -1,8 +1,10 @@
 package k8s
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,58 +13,28 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 )
 
-// ApplyManifestFile applies all resources defined in a YAML file.
-func ApplyManifestFile(ctx context.Context, client *K8sClient, path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read manifest: %w", err)
-	}
+var decUnstructured = yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 
-	docs := strings.Split(string(data), "---")
-	for _, doc := range docs {
-		if strings.TrimSpace(doc) == "" {
-			continue
-		}
-
-		obj := &unstructured.Unstructured{}
-		dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
-		_, gvk, err := dec.Decode([]byte(doc), nil, obj)
-		if err != nil {
-			return fmt.Errorf("failed to decode manifest doc: %w", err)
-		}
-
-		// Map GVK to GVR for dynamic client
-		dc, _ := discovery.NewDiscoveryClientForConfig(nil) // Simplified
-		mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
-		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-		if err != nil {
-			return fmt.Errorf("failed to get REST mapping: %w", err)
-		}
-
-		var dr dynamic.ResourceInterface
-		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
-			dr = client.Dynamic.Resource(mapping.Resource).Namespace(obj.GetNamespace())
-		} else {
-			dr = client.Dynamic.Resource(mapping.Resource)
-		}
-
-		_, err = dr.Apply(ctx, obj.GetName(), obj, metav1.ApplyOptions{FieldManager: "kgateway-bench-runner", Force: true})
-		if err != nil {
-			return fmt.Errorf("failed to apply resource %s: %w", obj.GetName(), err)
-		}
-	}
-	return nil
+// ApplyManifestDir applies all .yaml/.yml files in a directory in alphabetical order.
+func (c *K8sClient) ApplyManifestDir(ctx context.Context, dir string) error {
+	return c.handleDir(ctx, dir, true)
 }
 
-// ApplyManifestDir applies all .yaml files in a directory in alphabetical order.
-func ApplyManifestDir(ctx context.Context, client *K8sClient, dir string) error {
+// DeleteManifestDir deletes all resources defined in .yaml/.yml files in a directory.
+func (c *K8sClient) DeleteManifestDir(ctx context.Context, dir string) error {
+	return c.handleDir(ctx, dir, false)
+}
+
+func (c *K8sClient) handleDir(ctx context.Context, dir string, apply bool) error {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("failed to read directory %s: %w", dir, err)
@@ -77,9 +49,67 @@ func ApplyManifestDir(ctx context.Context, client *K8sClient, dir string) error 
 	sort.Strings(yamlFiles)
 
 	for _, f := range yamlFiles {
-		if err := ApplyManifestFile(ctx, client, f); err != nil {
+		if err := c.handleFile(ctx, f, apply); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func (c *K8sClient) handleFile(ctx context.Context, path string, apply bool) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read manifest %s: %w", path, err)
+	}
+
+	// Setup discovery and mapper using the actual config
+	dc, err := discovery.NewDiscoveryClientForConfig(c.Config)
+	if err != nil {
+		return err
+	}
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
+
+	decoder := yamlutil.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
+	for {
+		var rawObj runtime.RawExtension
+		if err := decoder.Decode(&rawObj); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+
+		obj := &unstructured.Unstructured{}
+		_, gvk, err := decUnstructured.Decode(rawObj.Raw, nil, obj)
+		if err != nil {
+			return fmt.Errorf("failed to decode object: %w", err)
+		}
+
+		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			return fmt.Errorf("failed to get REST mapping for %v: %w", gvk, err)
+		}
+
+		var dr dynamic.ResourceInterface
+		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+			dr = c.Dynamic.Resource(mapping.Resource).Namespace(obj.GetNamespace())
+		} else {
+			dr = c.Dynamic.Resource(mapping.Resource)
+		}
+
+		if apply {
+			_, err = dr.Apply(ctx, obj.GetName(), obj, metav1.ApplyOptions{
+				FieldManager: "kgateway-bench-runner",
+				Force:        true,
+			})
+		} else {
+			err = dr.Delete(ctx, obj.GetName(), metav1.DeleteOptions{})
+		}
+
+		if err != nil {
+			return fmt.Errorf("operation (apply=%v) failed for %s: %w", apply, obj.GetName(), err)
+		}
+	}
+
 	return nil
 }
