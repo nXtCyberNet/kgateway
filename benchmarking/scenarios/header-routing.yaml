@@ -1,0 +1,4 @@
+name: header-routing
+description: Gateway header routing
+targetRps: 100
+durationSeconds: 120

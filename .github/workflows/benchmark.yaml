@@ -1,0 +1,33 @@
+name: Nightly Benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+
+      - name: Setup cluster
+        run: ./benchmarking/scripts/setup-kind.sh
+
+      - name: Run benchmark runner
+        run: go run ./benchmarking/cmd/runner
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmarking/docs/results

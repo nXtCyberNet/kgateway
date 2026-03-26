@@ -1,0 +1,4 @@
+name: epp-fairness
+description: EPP Fairness Check
+targetRps: 50
+durationSeconds: 120

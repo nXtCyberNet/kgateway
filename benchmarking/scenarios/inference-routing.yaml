@@ -1,0 +1,4 @@
+name: inference-routing
+description: Full inference routing
+targetRps: 100
+durationSeconds: 120

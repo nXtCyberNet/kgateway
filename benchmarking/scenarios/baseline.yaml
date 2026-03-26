@@ -1,0 +1,4 @@
+name: baseline
+description: TCP direct baseline
+targetRps: 100
+durationSeconds: 120

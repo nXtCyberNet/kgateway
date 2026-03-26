@@ -1,0 +1,2 @@
+image: ghcr.io/llm-d/inference-perf:latest
+scenarioUrl: http://example.com

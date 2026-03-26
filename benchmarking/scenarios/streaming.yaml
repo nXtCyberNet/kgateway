@@ -1,0 +1,4 @@
+name: streaming
+description: SSE Streaming Test
+targetRps: 30
+durationSeconds: 180

@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-d-sim-medium
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-d-sim
+      tier: medium
+  template:
+    metadata:
+      labels:
+        app: llm-d-sim
+        tier: medium
+    spec:
+      containers:
+      - name: sim
+        image: ghcr.io/llm-d/llm-d-inference-sim:latest
+        env:
+        - name: RESPONSE_DELAY_MS
+          value: "100"
+        - name: MODEL_ID
+          value: "meta-llama/Llama-3-8b"
+        resources:
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+        ports:
+        - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-d-sim-medium
+  namespace: default
+spec:
+  selector:
+    app: llm-d-sim
+    tier: medium
+  ports:
+  - port: 8000
+    targetPort: 8000
