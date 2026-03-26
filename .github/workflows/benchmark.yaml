@@ -1,33 +1,109 @@
-name: Nightly Benchmarks
+# .github/workflows/benchmark.yaml
+name: "Inference Routing Benchmark"
 
 on:
-  workflow_dispatch:
+  # Run on any change inside the benchmarking directory (PRs)
+  pull_request:
+    paths:
+      - "benchmarking/**"
+
+  # Nightly run to catch regressions on main
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 2 * * *"   # 02:00 UTC every day
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   benchmark:
+    name: Run kgateway Inference Benchmarks
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Set up Go
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go 1.22
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.22"
+          cache: true
+          cache-dependency-path: benchmarking/go.sum
 
-      - name: Install kind
-        uses: helm/kind-action@v1
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/
 
-      - name: Setup cluster
-        run: ./benchmarking/scripts/setup-kind.sh
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
 
-      - name: Run benchmark runner
-        run: go run ./benchmarking/cmd/runner
+      - name: Install Helm
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
 
-      - name: Upload artifacts
+      - name: Run Kind cluster setup + kgateway + Prometheus
+        run: |
+          chmod +x benchmarking/scripts/setup-kind.sh
+          benchmarking/scripts/setup-kind.sh
+
+      - name: Port-forward Prometheus to localhost:9090
+        run: |
+          kubectl port-forward -n monitoring svc/prometheus-server 9090:80 > /dev/null 2>&1 &
+          echo "PROMETHEUS_PID=$!" >> $GITHUB_ENV
+          sleep 8  # give port-forward time to start
+
+      - name: Run full benchmarking suite
+        working-directory: ./benchmarking
+        run: |
+          go run ./cmd/runner \
+            --scenario all \
+            --namespace default \
+            --prometheus-url http://localhost:9090 \
+            --baseline results/baseline.json \
+            --threshold 20 \
+            --output results/ \
+            --data-plane envoy
+
+      - name: Kill Prometheus port-forward
+        if: always()
+        run: |
+          kill ${{ env.PROMETHEUS_PID }} || true
+
+      - name: Upload benchmark results & HTML report
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: benchmarking/docs/results
+          path: |
+            benchmarking/results/
+            benchmarking/results/report.html
+          retention-days: 30
+
+      - name: Generate summary for PR comment
+        if: github.event_name == 'pull_request'
+        id: summary
+        run: |
+          echo "SUMMARY<<EOF" >> $GITHUB_ENV
+          cat benchmarking/results/report.html | grep -oP '(?s)<table>.*?</table>' | head -c 3000 || echo "Benchmark completed" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = process.env.SUMMARY || "Benchmark completed successfully. Check artifacts for full report.";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## 📊 Inference Routing Benchmark Results\n\n${summary}\n\nFull HTML report and JSON results are attached as workflow artifacts.`
+            });
