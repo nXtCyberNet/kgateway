@@ -19,6 +19,14 @@ on:
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Run mode"
+        required: true
+        type: choice
+        default: poc
+        options:
+          - poc
+          - full
       scenario:
         description: "Benchmark scenario to run"
         required: true
@@ -55,8 +63,42 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  benchmark:
-    name: Run kgateway Inference Benchmarks
+  benchmark-poc:
+    name: Benchmark POC (baseline stub)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: benchmarking/go.mod
+          cache: true
+          cache-dependency-path: benchmarking/go.sum
+
+      - name: Run minimal POC benchmark
+        working-directory: ./benchmarking
+        run: |
+          go run ./cmd/runner \
+            --scenario baseline \
+            --stub \
+            --output results/poc
+
+      - name: Upload POC results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-poc-results
+          path: |
+            benchmarking/results/poc/
+            benchmarking/results/poc/report.html
+          retention-days: 30
+
+  benchmark-full:
+    name: Run kgateway Inference Benchmarks (full)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'full')
     runs-on: ubuntu-latest
     timeout-minutes: 90
 

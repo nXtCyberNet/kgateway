@@ -259,6 +259,7 @@ func (c *K8sClient) HelmUninstall(ctx context.Context, release, ns string) error
 // (Complete or Failed), or until timeout elapses.
 func (c *K8sClient) WaitForJobComplete(ctx context.Context, namespace, jobName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	lastPodDetails := ""
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -280,10 +281,84 @@ func (c *K8sClient) WaitForJobComplete(ctx context.Context, namespace, jobName s
 			}
 		}
 
+		pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+		})
+		if err == nil {
+			details, fatalReason := summarizeJobPods(pods.Items)
+			if details != "" {
+				lastPodDetails = details
+			}
+			if fatalReason != "" {
+				return fmt.Errorf("job %s cannot make progress: %s; pod details: %s", jobName, fatalReason, lastPodDetails)
+			}
+		}
+
 		time.Sleep(10 * time.Second)
 	}
 
+	if lastPodDetails != "" {
+		return fmt.Errorf("timed out after %s waiting for job %s to complete; pod details: %s", timeout, jobName, lastPodDetails)
+	}
+
 	return fmt.Errorf("timed out after %s waiting for job %s to complete", timeout, jobName)
+}
+
+func summarizeJobPods(pods []corev1.Pod) (string, string) {
+	if len(pods) == 0 {
+		return "no job pod created yet", ""
+	}
+
+	fatalWaitReasons := map[string]bool{
+		"ErrImagePull":               true,
+		"ImagePullBackOff":           true,
+		"InvalidImageName":           true,
+		"CreateContainerConfigError": true,
+		"CreateContainerError":       true,
+	}
+
+	var details strings.Builder
+	var fatalReason string
+
+	for _, pod := range pods {
+		details.WriteString(fmt.Sprintf("%s phase=%s", pod.Name, pod.Status.Phase))
+
+		for _, cs := range pod.Status.InitContainerStatuses {
+			if cs.State.Waiting != nil {
+				reason := cs.State.Waiting.Reason
+				msg := cs.State.Waiting.Message
+				details.WriteString(fmt.Sprintf(" init=%s waiting=%s(%s)", cs.Name, reason, msg))
+				if fatalWaitReasons[reason] && fatalReason == "" {
+					fatalReason = fmt.Sprintf("init container %s is waiting with %s", cs.Name, reason)
+				}
+			}
+			if cs.State.Terminated != nil {
+				details.WriteString(fmt.Sprintf(" init=%s terminated=%s(%s)", cs.Name, cs.State.Terminated.Reason, cs.State.Terminated.Message))
+			}
+		}
+
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil {
+				reason := cs.State.Waiting.Reason
+				msg := cs.State.Waiting.Message
+				details.WriteString(fmt.Sprintf(" container=%s waiting=%s(%s)", cs.Name, reason, msg))
+				if fatalWaitReasons[reason] && fatalReason == "" {
+					fatalReason = fmt.Sprintf("container %s is waiting with %s", cs.Name, reason)
+				}
+			}
+			if cs.State.Terminated != nil {
+				term := cs.State.Terminated
+				details.WriteString(fmt.Sprintf(" container=%s terminated=%s(exit=%d)", cs.Name, term.Reason, term.ExitCode))
+				if term.ExitCode != 0 && fatalReason == "" {
+					fatalReason = fmt.Sprintf("container %s terminated with %s (exit %d)", cs.Name, term.Reason, term.ExitCode)
+				}
+			}
+		}
+
+		details.WriteString("; ")
+	}
+
+	return strings.TrimSpace(details.String()), fatalReason
 }
 
 // GetJobLogs returns the combined stdout logs from all pods belonging to the named Job.

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -136,6 +137,9 @@ func (c *K8sClient) processFile(ctx context.Context, path string, mapper meta.RE
 				FieldManager: "kgateway-bench-runner",
 				Force:        true,
 			})
+			if err != nil && shouldFallbackFromSSA(err, obj) {
+				err = upsertResource(ctx, dr, obj)
+			}
 		} else {
 			err = dr.Delete(ctx, obj.GetName(), metav1.DeleteOptions{})
 			if err != nil && strings.Contains(err.Error(), "not found") {
@@ -198,4 +202,36 @@ func opName(apply bool) string {
 		return "apply"
 	}
 	return "delete"
+}
+
+// shouldFallbackFromSSA identifies known upstream schema issues that break
+// server-side apply for inference extension CRDs.
+func shouldFallbackFromSSA(err error, obj *unstructured.Unstructured) bool {
+	if err == nil || obj == nil {
+		return false
+	}
+
+	apiVersion := obj.GetAPIVersion()
+	if !strings.Contains(apiVersion, "inference.networking.") {
+		return false
+	}
+
+	msg := err.Error()
+	return strings.Contains(msg, "matchLabels") && strings.Contains(msg, "expected string")
+}
+
+// upsertResource performs a plain create-or-update flow, bypassing SSA.
+func upsertResource(ctx context.Context, dr dynamic.ResourceInterface, obj *unstructured.Unstructured) error {
+	existing, err := dr.Get(ctx, obj.GetName(), metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			_, createErr := dr.Create(ctx, obj, metav1.CreateOptions{})
+			return createErr
+		}
+		return err
+	}
+
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	_, err = dr.Update(ctx, obj, metav1.UpdateOptions{})
+	return err
 }

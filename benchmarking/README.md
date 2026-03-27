@@ -1,56 +1,229 @@
 # kgateway Benchmarking Reference
 
-This directory contains the inference-routing benchmarking framework for kgateway.
-It measures end-to-end request performance and computes gateway overhead ("gateway tax") for different routing and policy setups.
+This module benchmarks inference-routing behavior in kgateway end-to-end.
+It deploys simulator backends, configures Gateway resources, runs synthetic traffic, scrapes Prometheus metrics, computes regressions, and publishes JSON plus HTML reports.
 
-## What This Project Is
+## Table Of Contents
 
-kgateway is a Kubernetes Gateway API control plane for Envoy. The benchmarking module focuses on AI/inference traffic scenarios and answers practical questions such as:
+1. Overview
+2. Goals And Non-Goals
+3. Architecture
+4. End-To-End Execution Flow
+5. Scenario Catalog
+6. Repository Map
+7. Environment And Prerequisites
+8. Local Setup And Runbook
+9. Runner CLI And Behavior
+10. Metrics, Regression, And Reporting
+11. CI Workflow Details
+12. Known Issues And Failure Modes
+13. Error Playbooks
+14. Current Technical Debt And Next Fixes
+15. Command Reference
 
-- How much latency does routing through kgateway add versus direct simulator access?
-- How does inference routing behavior affect P99 latency?
-- Are streaming metrics (TTFT/ITL) stable under load?
-- Are fairness goals met for tiered backends?
+## Overview
 
-## Key Features
+The benchmarking stack answers these questions with reproducible runs:
 
-- Scenario-driven benchmark runner (`cmd/runner`)
-- Multiple scenarios: `baseline`, `header-routing`, `inference-routing`, `streaming`, `epp-fairness`
-- Automatic baseline handling for regression checks
-- Threshold-based regression detection (`--threshold`, default `20`)
-- Data-plane selection (`--data-plane envoy|agentgateway`)
-- Metrics collection from Prometheus (latency, resource, fairness-related data)
-- HTML report generation plus per-scenario JSON output
-- Stub mode (`--stub`) for validating report pipeline without a live cluster
-- Helm-based load generation (`helm/inference-perf`)
-- Fallback handling for inference manifests (`v1alpha2` -> `v1` when needed)
+- What is the gateway tax (P99 delta vs baseline)?
+- How much latency is added by inference routing and policy layers?
+- Is request distribution fair across backend tiers under EPP constraints?
+- Are streaming metrics (TTFT, ITL) stable under load?
+- Are changes regressing latency or error rate compared to baseline?
 
-## Repository Layout (Benchmarking)
+The benchmark is designed for both local iteration and CI automation.
 
-- `cmd/runner`: CLI runner and orchestration logic
-- `pkg/k8s`: Kubernetes and Helm interactions
-- `pkg/metrics`: scraping, regression logic, summaries
-- `pkg/scenarios`: scenario definitions and validators
-- `manifests`: gateway, simulator, inference manifests
-- `scenarios`: YAML scenario configs
-- `helm/inference-perf`: load job chart
-- `results`: generated benchmark artifacts
-- `scripts/setup-kind.sh`: local benchmark cluster bootstrap
+## Goals And Non-Goals
 
-## Prerequisites
+### Goals
+
+- Measure scenario-level P50, P95, P99, throughput, error rate, CPU, memory.
+- Capture streaming metrics (TTFT, ITL) when applicable.
+- Compute gateway tax using baseline P99 as control.
+- Detect regressions automatically and fail CI when thresholds are exceeded.
+- Keep scenario configuration human-editable via YAML.
+
+### Non-Goals
+
+- Absolute production capacity validation.
+- Full conformance testing of all Gateway API features.
+- Multi-cluster orchestration or production-grade load generation reliability.
+
+## Architecture
+
+The module has five major components:
+
+1. Orchestrator
+The Go runner (`cmd/runner/main.go`) drives setup, load, scraping, cleanup, and reporting.
+
+2. Kubernetes Runtime Layer
+`pkg/k8s` provides typed orchestration helpers for:
+- Helm install/uninstall for load jobs
+- Manifest apply/delete (directory and file)
+- Pod readiness wait
+- Job completion wait
+- Job log collection
+- Pod port-forward for streaming probes
+
+3. Workload Under Test
+Simulator deployments/services in `manifests/simulator` emulate heterogeneous inference tiers (large, medium, small).
+
+4. Control Plane And Routing
+Gateway resources and inference extension manifests are applied from `manifests`.
+Per-data-plane gateways are available under `manifests/envoy` and `manifests/agentgateway`.
+
+5. Observability And Output
+Prometheus queries in `pkg/metrics/prometheus.go` produce scenario metrics.
+Regression and summary logic in `pkg/metrics/regression.go`.
+HTML dashboard generation in `pkg/report/html.go`.
+
+## End-To-End Execution Flow
+
+For each scenario, the runner does this sequential pipeline:
+
+1. Load scenario YAML from `scenarios/*.yaml`.
+2. Apply simulator manifests (`manifests/simulator`).
+3. Apply gateway manifest (`manifests/gateway.yaml` or data-plane-specific override).
+4. If inference routing is enabled:
+- apply `inference-pool.yaml`
+- apply `inference-model.yaml`
+- if cluster lacks v1alpha2 support, fallback to v1 manifest variants
+5. Wait for expected simulator pod count based on scenario replicas.
+6. Warmup sleep (`warmupSeconds`).
+7. Install Helm load job chart (`helm/inference-perf`) with runtime values:
+- scenario URL
+- target RPS
+- duration
+- concurrent users
+- warmup seconds
+- active deadline seconds
+8. Wait for job completion with timeout buffer.
+9. Scrape metrics from Prometheus.
+10. Run scenario-specific checks:
+- streaming: direct SSE TTFT/ITL measurement
+- fairness: expected tier distribution validation
+11. Save per-scenario JSON output.
+12. Update `baseline.json` when scenario is `baseline`.
+13. Compute gateway tax and regression results.
+14. Generate summary table and HTML report.
+15. Cleanup:
+- uninstall helm job
+- delete manifests in reverse-safe order
+
+## Scenario Catalog
+
+Current source of truth is YAML in `benchmarking/scenarios`.
+
+### baseline
+
+- Purpose: control sample for gateway tax
+- Inference routing: disabled
+- Body parsing: disabled
+- Current config:
+	- targetRPS: 100
+	- durationSeconds: 120
+	- concurrentUsers: 10
+	- warmupSeconds: 60
+	- tiers: large only, replicas 2
+
+### header-routing
+
+- Purpose: route-level overhead without inference extension
+- Inference routing: disabled
+- Body parsing: disabled
+- Current config:
+	- targetRPS: 100
+	- durationSeconds: 120
+	- concurrentUsers: 10
+	- warmupSeconds: 60
+	- tiers: large only, replicas 2
+
+### inference-routing
+
+- Purpose: full inference routing overhead under heterogeneous tiers
+- Inference routing: enabled
+- Body parsing: enabled
+- Current config:
+	- targetRPS: 100
+	- durationSeconds: 120
+	- concurrentUsers: 20
+	- warmupSeconds: 15
+	- tiers: large, medium, small
+
+### streaming
+
+- Purpose: SSE behavior, TTFT and ITL quality
+- Inference routing: enabled
+- Body parsing: enabled
+- Current config:
+	- targetRPS: 20
+	- durationSeconds: 60
+	- concurrentUsers: 5
+	- warmupSeconds: 10
+	- tiers: large, small
+
+### epp-fairness
+
+- Purpose: distribution fairness validation by tier
+- Inference routing: enabled
+- Body parsing: enabled
+- Current config:
+	- targetRPS: 50
+	- durationSeconds: 120
+	- concurrentUsers: 15
+	- warmupSeconds: 15
+	- tiers: large, medium, small
+
+Fairness target in code is 70/20/10 with tolerance 5 percent (`pkg/scenarios/epp_fairness.go`).
+
+## Repository Map
+
+- `cmd/runner`: CLI entrypoint and orchestration pipeline
+- `pkg/k8s`: kubectl/helm equivalents in code
+- `pkg/metrics`: Prometheus queries, regression logic, summary table
+- `pkg/report`: HTML report generation
+- `pkg/scenarios`: typed scenario model and helper logic
+- `manifests`: all Kubernetes resources used by scenarios
+- `helm/inference-perf`: load-generator job chart
+- `scenarios`: editable scenario profiles
+- `scripts/setup-kind.sh`: one-command local cluster setup
+- `results`: output JSONs and report artifacts
+
+## Environment And Prerequisites
 
 - Kind
 - kubectl
 - Helm
-- Go (benchmarking module currently uses `go 1.25.0` in `benchmarking/go.mod`)
-- Prometheus reachable by the runner (`--prometheus-url`)
+- Go matching `benchmarking/go.mod` (currently Go 1.25.0)
+- Docker/runtime network that can pull from quay.io and ghcr.io
+- Prometheus accessible to runner via `--prometheus-url`
 
-## Quick Start
+## Local Setup And Runbook
 
-From the `benchmarking` directory:
+### Cluster bootstrap
+
+Run from `benchmarking`:
 
 ```bash
 bash scripts/setup-kind.sh
+```
+
+What the script does:
+
+1. Creates kind cluster `kgateway-bench`.
+2. Waits for API server and nodes readiness.
+3. Applies Gateway API CRDs from experimental bundle.
+4. Applies inference extension CRDs:
+- inferencepools
+- inferencemodelrewrites
+- inferenceobjectives
+5. Installs kgateway charts with AI extension enabled.
+6. Installs Prometheus chart.
+7. Waits for core monitoring workloads with retries.
+
+### Benchmark run
+
+```bash
 go run ./cmd/runner \
 	--scenario all \
 	--namespace default \
@@ -61,126 +234,232 @@ go run ./cmd/runner \
 	--output results/real-all
 ```
 
-Output artifacts:
+### Output
 
-- JSON files in the output folder
-- HTML report at `<output>/report.html`
+- Per-scenario JSON: `<output>/<scenario>_<timestamp>.json`
+- Baseline file: `results/baseline.json` (updated by baseline scenario)
+- HTML report: `<output>/report.html`
 
-## Runner Flags (Most Used)
+## Runner CLI And Behavior
 
-- `--scenario`: one of `baseline|header-routing|inference-routing|streaming|epp-fairness|all`
-- `--namespace`: Kubernetes namespace (default `default`)
-- `--data-plane`: `envoy` or `agentgateway`
-- `--prometheus-url`: Prometheus API endpoint
-- `--baseline`: baseline JSON path for regression checks
-- `--threshold`: regression threshold percent for P99 checks
+Main flags:
+
+- `--scenario`: baseline, header-routing, inference-routing, streaming, epp-fairness, all
+- `--kubeconfig`: optional kubeconfig path
+- `--prometheus-url`: Prometheus HTTP API URL
+- `--scenarios-dir`: YAML scenario directory
 - `--output`: output directory
-- `--stub`: synthetic run without cluster calls
+- `--baseline`: baseline JSON path
+- `--threshold`: regression threshold percentage
+- `--data-plane`: envoy or agentgateway
+- `--namespace`: namespace for all benchmark resources
+- `--stub`: synthetic mode, skips K8s and Prometheus calls
 
-## Current Problems Seen So Far and Solutions
+Important runtime behavior:
 
-### 1) Missing Inference CRDs
+- Baseline load failure is non-fatal for run start, but regressions are skipped without baseline.
+- Job timeout includes CI startup buffer and has an 8 minute minimum.
+- Runner prints chart path and resolved target URL before Helm install.
+- If job wait fails, runner attempts to include job logs in error output.
 
-Symptom:
+## Metrics, Regression, And Reporting
 
-- `no matches for kind "InferencePool" in version "inference.networking.x-k8s.io/..."`
+### Metrics collection
 
-Cause:
+Collected in `pkg/metrics/prometheus.go`:
 
-- Standard Gateway API experimental CRDs do not include Gateway API Inference Extension CRDs.
+- Latency percentiles: P50, P95, P99
+- Error rate
+- Gateway CPU and memory
+- EPP decision latency
+- Agentgateway TTFT/ITL (for agentgateway data plane)
 
-Solution:
+Streaming scenario additionally captures TTFT and ITL via direct SSE measurement from `pkg/scenarios/streaming.go`.
 
-- Ensure inference extension CRDs are applied before running inference scenarios.
-- `benchmarking/scripts/setup-kind.sh` has been updated to apply:
-	- `inference.networking.x-k8s.io_inferencepools.yaml`
-	- `inference.networking.x-k8s.io_inferencemodelrewrites.yaml`
-	- `inference.networking.x-k8s.io_inferenceobjectives.yaml`
-- Note: `inference.networking.x-k8s.io_inferencemodels.yaml` currently returns 404 upstream.
+### Gateway tax
 
-### 1.1) InferenceModel Kind Compatibility Risk
+Computed as:
 
-Symptom:
+- `gatewayOverheadMs = scenarioP99 - baselineP99`
 
-- Inference scenarios may fail while applying `InferenceModel` even after CRDs are installed.
+### Regression checks
 
-Cause:
+`pkg/metrics/regression.go` marks regression when either:
 
-- Current upstream CRD set in `config/crd/bases` may not include an `InferenceModel` CRD file, while benchmark manifests still reference `InferenceModel` resources.
+- P99 exceeds baseline by threshold percent, or
+- error rate increases by more than 0.01 absolute
 
-Solution:
+### HTML report
 
-- Check served resources in your cluster (`kubectl api-resources | grep -i inference`).
-- If `InferenceModel` is not served, update benchmark manifests/scenarios to the currently supported inference API objects.
+`pkg/report/html.go` renders a single standalone file with:
 
-### 2) Baseline File Missing (Regression Checks Skipped)
+- scenario table
+- status badges
+- regression state
+- infrastructure utilization summary
 
-Symptom:
+## CI Workflow Details
 
-- Runner warns baseline was not loaded and skips regression checks.
+Primary workflow is repository-level `.github/workflows/benchmark.yaml`.
 
-Cause:
+Triggers:
 
-- Baseline path does not exist yet.
+- push on `benchmarking/**` and workflow file
+- pull_request on `benchmarking/**`
+- nightly schedule (`0 2 * * *`)
+- manual `workflow_dispatch` with inputs
 
-Solution:
+Manual inputs:
 
-- Run the benchmark at least once so baseline can be saved.
-- Keep `--baseline` pointing to the same file for future comparisons.
+- scenario
+- data_plane
+- threshold
+- kgateway_version
 
-### 3) `inference-perf` Job Timeout
+Pipeline summary:
 
-Symptom:
+1. Checkout
+2. Setup Go from `benchmarking/go.mod`
+3. Install kind, kubectl, helm
+4. Run `benchmarking/scripts/setup-kind.sh`
+5. Port-forward Prometheus to localhost
+6. Run runner with chosen inputs
+7. Upload artifacts
+8. PR comments include report summary snippet
 
-- Timeout waiting for job completion.
+## Known Issues And Failure Modes
 
-Likely causes:
+### Inference CRD compatibility drift
 
-- Upstream service not reachable
-- Pods not ready
-- Helm job failing internally
-- Cluster resource pressure
+Problem:
 
-Solution checklist:
+- Upstream CRD layouts change, causing missing-kind errors.
 
-- Inspect job logs: `kubectl -n <ns> logs job/inference-perf`
-- Inspect job/pod status: `kubectl -n <ns> get jobs,pods`
-- Confirm simulator pods are ready and service DNS target exists
-- Re-run single scenario first (for example `baseline`) to narrow scope
+Current handling:
 
-### 4) Incorrect `kubectl logs` Resource Type
+- setup script installs specific inference CRD files
+- runner has fallback from v1alpha2 manifests to v1 variants
 
-Symptom:
+Open risk:
 
-- `deployments.apps "<pod-name>" not found`
+- `InferenceModel` availability can differ by extension version; manifests may require future migration to newer resource types.
 
-Cause:
+### SSA typed patch schema error on InferencePool
 
-- Pod name used with `deploy/` prefix.
+Problem:
 
-Solution:
+- some cluster/schema combinations fail SSA on `spec.selector.matchLabels`
 
-- Use `pod/<pod-name>` or query deployment logs by deployment name.
+Current handling:
 
-## Troubleshooting Commands
+- apply path now attempts SSA first, then falls back to create/update for inference resources on known schema error signatures
+
+### DNS/image pull instability in local and CI environments
+
+Problem:
+
+- quay.io or ghcr.io pull latency/timeouts block Prometheus or job startup
+
+Current handling:
+
+- retry logic in setup-kind readiness waits
+- larger runner job timeout startup buffer
+- early non-progress detection in job wait path
+
+### Scenario drift between YAML and Go constructors
+
+Problem:
+
+- runner loads YAML, not constructor defaults
+
+Impact:
+
+- changing Go scenario constructors does not affect runtime unless YAML is updated
+
+Recommendation:
+
+- treat YAML as source of truth and keep constructors aligned or deprecate constructors for non-test use
+
+## Error Playbooks
+
+### Job timeout waiting for inference-perf
+
+Run:
 
 ```bash
-kubectl -n default get pods,jobs
-kubectl -n default logs job/inference-perf
+kubectl -n default get jobs,pods
 kubectl -n default describe job inference-perf
-kubectl -n default get events --sort-by=.lastTimestamp | tail -n 50
+kubectl -n default logs job/inference-perf
+kubectl -n default get events --sort-by=.lastTimestamp | tail -n 80
 ```
 
-## Practical Workflow
+Check for:
 
-1. Run `scripts/setup-kind.sh`.
-2. Run `baseline` scenario and verify completion.
-3. Confirm `results/baseline.json` exists.
-4. Run `all` scenarios with regression threshold.
-5. Review `<output>/report.html` and scenario JSON files.
+- image pull failures
+- unresolved service DNS
+- crash loops in perf container
+- deadline exceeded before workload starts
 
-## Notes
+### InferencePool apply error with matchLabels expected string
 
-- Inference routing scenarios require both core Gateway API CRDs and Inference Extension CRDs.
-- If cluster setup changes, re-run setup to avoid stale CRD/API mismatches.
-- When debugging, run a single scenario first to reduce noise and speed iteration.
+Meaning:
+
+- SSA schema typing issue surfaced before object apply
+
+Current status:
+
+- fallback path is implemented in manifests apply logic
+
+### Prometheus rollout stuck in setup-kind
+
+Typical root cause:
+
+- transient image pull DNS failures
+
+Run:
+
+```bash
+kubectl -n monitoring get pods -o wide
+kubectl -n monitoring describe pod -l app.kubernetes.io/name=prometheus
+kubectl -n monitoring get events --sort-by=.lastTimestamp | tail -n 120
+```
+
+## Current Technical Debt And Next Fixes
+
+1. Inference API evolution alignment
+- Revisit manifests to match latest upstream inference extension kinds and versions.
+
+2. Unified scenario source
+- Decide whether YAML or Go constructors are canonical and enforce consistency checks.
+
+3. More actionable failure logs
+- On job wait failure, append pod describe/events automatically in runner output.
+
+4. CI resiliency
+- Add optional mirror/pull-through cache strategy for external images if network flakiness persists.
+
+## Command Reference
+
+Run baseline only:
+
+```bash
+go run ./cmd/runner --scenario baseline --namespace default --prometheus-url http://127.0.0.1:9090 --output results/baseline-run
+```
+
+Run all scenarios with explicit baseline and threshold:
+
+```bash
+go run ./cmd/runner --scenario all --namespace default --data-plane envoy --prometheus-url http://127.0.0.1:9090 --baseline results/baseline.json --threshold 20 --output results/full-run
+```
+
+Stub mode (no cluster calls):
+
+```bash
+go run ./cmd/runner --scenario all --stub --output results/stub
+```
+
+Run tests for benchmarking module:
+
+```bash
+go test ./benchmarking/...
+```

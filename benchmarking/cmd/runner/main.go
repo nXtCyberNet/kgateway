@@ -310,10 +310,18 @@ func executeScenario(
 	fmt.Printf("   Generating load (%d RPS for %ds)...\n", scenario.TargetRPS, scenario.DurationSeconds)
 	serviceName := serviceNameForScenario(scenario)
 	chartPath := filepath.Join(benchmarkingRoot, "helm", "inference-perf")
-	jobTimeout := time.Duration(scenario.DurationSeconds+120) * time.Second
+	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/v1/completions", serviceName, namespace)
+	fmt.Printf("   Chart path: %s\n", chartPath)
+	fmt.Printf("   Target URL: %s\n", targetURL)
+	// CI image pulls can be slow; include larger startup buffer so benchmark jobs
+	// do not time out before workload execution begins.
+	jobTimeout := time.Duration(scenario.DurationSeconds+300) * time.Second
+	if jobTimeout < 8*time.Minute {
+		jobTimeout = 8 * time.Minute
+	}
 	activeDeadlineSeconds := int(math.Ceil(jobTimeout.Seconds()))
 	if err := k8sClient.HelmInstall(ctx, "inference-perf", chartPath, namespace, map[string]interface{}{
-		"scenarioUrl":           fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/v1/completions", serviceName, namespace),
+		"scenarioUrl":           targetURL,
 		"targetRps":             scenario.TargetRPS,
 		"durationSeconds":       scenario.DurationSeconds,
 		"concurrentUsers":       scenario.ConcurrentUsers,
@@ -397,10 +405,6 @@ func executeScenario(
 // fallback to llm-d-sim would not resolve in-cluster and causes load jobs to stall.
 func serviceNameForScenario(scenario *scenarios.Scenario) string {
 	if len(scenario.BackendTiers) > 0 {
-		if app, ok := scenario.BackendTiers[0].Labels["app"]; ok && app != "" {
-			return app
-		}
-
 		name := strings.TrimSpace(scenario.BackendTiers[0].Name)
 		name = strings.ToLower(name)
 		if strings.HasPrefix(name, "tier-") {
@@ -411,6 +415,20 @@ func serviceNameForScenario(scenario *scenarios.Scenario) string {
 		}
 		if n, err := strconv.Atoi(name); err == nil && n >= 0 {
 			return fmt.Sprintf("llm-d-sim-%d", n)
+		}
+
+		if app, ok := scenario.BackendTiers[0].Labels["app"]; ok && app != "" {
+			// app=llm-d-sim is a pod label, not a concrete Service name.
+			if app == "llm-d-sim" {
+				if tier, ok := scenario.BackendTiers[0].Labels["tier"]; ok && strings.TrimSpace(tier) != "" {
+					return "llm-d-sim-" + strings.ToLower(strings.TrimSpace(tier))
+				}
+				return "llm-d-sim-large"
+			}
+
+			if strings.HasPrefix(app, "llm-d-sim-") {
+				return app
+			}
 		}
 	}
 	return "llm-d-sim-large"

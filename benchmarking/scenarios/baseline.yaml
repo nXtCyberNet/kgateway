@@ -3,16 +3,17 @@ description: TCP direct baseline
 gatewayClass: kgateway
 enableInferenceRouting: false
 enableBodyParsing: false
-targetRPS: 67
+targetRPS: 100
 durationSeconds: 120
 concurrentUsers: 10
-warmupSeconds: 15
+warmupSeconds: 60
 backendTiers:
   - name: tier-large
-    cpuLimit: "2000m"
-    memoryLimit: "2Gi"
-    responseDelayMs: 20
-    replicas: 1
+    cpuLimit: "4"
+    memoryLimit: "4Gi"
+    responseDelayMs: 50
+    replicas: 2
     labels:
+      app: llm-d-sim
       tier: large
-    simulatedKVCachePercent: 30
+    simulatedKVCachePercent: 0
