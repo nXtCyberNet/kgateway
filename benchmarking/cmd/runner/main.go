@@ -310,9 +310,9 @@ func executeScenario(
 	fmt.Printf("   Generating load (%d RPS for %ds)...\n", scenario.TargetRPS, scenario.DurationSeconds)
 	serviceName := serviceNameForScenario(scenario)
 	chartPath := filepath.Join(benchmarkingRoot, "helm", "inference-perf")
-	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000/v1/completions", serviceName, namespace)
+	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000", serviceName, namespace)
 	fmt.Printf("   Chart path: %s\n", chartPath)
-	fmt.Printf("   Target URL: %s\n", targetURL)
+	fmt.Printf("   Target Base URL: %s\n", targetURL)
 	// CI image pulls can be slow; include larger startup buffer so benchmark jobs
 	// do not time out before workload execution begins.
 	jobTimeout := time.Duration(scenario.DurationSeconds+300) * time.Second

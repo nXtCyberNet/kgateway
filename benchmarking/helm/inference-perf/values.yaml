@@ -4,6 +4,11 @@ targetRps: 20
 durationSeconds: 60
 concurrentUsers: 5
 warmupSeconds: 10
+apiType: completion
+streaming: false
+serverType: vllm
+modelName: meta-llama/Llama-3-8b
+dataType: mock
 activeDeadlineSeconds: 240
 backoffLimit: 0
 ttlSecondsAfterFinished: 300

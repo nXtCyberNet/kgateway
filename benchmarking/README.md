@@ -351,12 +351,13 @@ Problem:
 
 Current handling:
 
-- `helm/inference-perf` now uses a public image (`curlimages/curl`) with an inline shell load loop.
+- `helm/inference-perf` now uses the public pinned image `quay.io/inference-perf/inference-perf:v0.4.0`.
+- the benchmark job runs the real `inference-perf` CLI with a generated config file mounted via ConfigMap.
 - this removes dependency on private GHCR package access for baseline/full runs.
 
 Impact:
 
-- generated load is simpler than the original custom load image, but sufficient for baseline PoC and real workflow validation.
+- load generation and request lifecycle reporting are produced by the actual `inference-perf` tool.
 
 ### Inference CRD compatibility drift
 
