@@ -7,7 +7,7 @@ warmupSeconds: 10
 apiType: completion
 streaming: false
 serverType: vllm
-modelName: meta-llama/Llama-3-8b
+modelName: HuggingFaceTB/SmolLM2-135M-Instruct
 dataType: mock
 activeDeadlineSeconds: 240
 backoffLimit: 0

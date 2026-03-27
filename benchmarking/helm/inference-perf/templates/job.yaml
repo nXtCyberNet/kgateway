@@ -12,9 +12,14 @@ spec:
       - name: perf
         image: {{ .Values.image }}
         imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command:
+        - python
+        - inference_perf/main.py
         args:
         - --config_file
         - /workspace/config.yml
+        - --log-level
+        - DEBUG
         volumeMounts:
         - name: config
           mountPath: /workspace/config.yml

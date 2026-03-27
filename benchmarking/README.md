@@ -353,6 +353,7 @@ Current handling:
 
 - `helm/inference-perf` now uses the public pinned image `quay.io/inference-perf/inference-perf:v0.4.0`.
 - the benchmark job runs the real `inference-perf` CLI with a generated config file mounted via ConfigMap.
+- the tool's `server.model_name` is set to a public model ID for tokenizer initialization reliability; request routing target remains the in-cluster simulator endpoint.
 - this removes dependency on private GHCR package access for baseline/full runs.
 
 Impact:
