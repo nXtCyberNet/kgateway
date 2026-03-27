@@ -343,6 +343,21 @@ Why this split exists:
 
 ## Known Issues And Failure Modes
 
+### Private image pull failures for load generator
+
+Problem:
+
+- previous load image `ghcr.io/llm-d/inference-perf:latest` can return `403 Forbidden` in GitHub Actions and other unauthenticated environments.
+
+Current handling:
+
+- `helm/inference-perf` now uses a public image (`curlimages/curl`) with an inline shell load loop.
+- this removes dependency on private GHCR package access for baseline/full runs.
+
+Impact:
+
+- generated load is simpler than the original custom load image, but sufficient for baseline PoC and real workflow validation.
+
 ### Inference CRD compatibility drift
 
 Problem:

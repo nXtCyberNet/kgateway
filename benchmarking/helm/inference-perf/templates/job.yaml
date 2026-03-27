@@ -12,6 +12,42 @@ spec:
       - name: perf
         image: {{ .Values.image }}
         imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command:
+        - /bin/sh
+        - -ec
+        args:
+        - |
+          target="${SCENARIO_URL}"
+          rps="${TARGET_RPS}"
+          duration="${DURATION_SECONDS}"
+
+          if [ -z "${target}" ]; then
+            echo "SCENARIO_URL is empty"
+            exit 1
+          fi
+          if [ -z "${rps}" ] || [ "${rps}" -le 0 ]; then
+            rps=1
+          fi
+          if [ -z "${duration}" ] || [ "${duration}" -le 0 ]; then
+            duration=30
+          fi
+
+          echo "Starting load: target=${target} rps=${rps} duration=${duration}s"
+
+          end_ts=$(( $(date +%s) + duration ))
+          while [ "$(date +%s)" -lt "${end_ts}" ]; do
+            i=0
+            while [ "${i}" -lt "${rps}" ]; do
+              curl -sS --max-time 5 --connect-timeout 2 -o /dev/null \
+                -H "Content-Type: application/json" \
+                -X POST "${target}" \
+                -d '{"model":"meta-llama/Llama-3-8b","prompt":"benchmark","max_tokens":16}' || true
+              i=$((i + 1))
+            done
+            sleep 1
+          done
+
+          echo "Load generation completed"
         env:
         - name: SCENARIO
           value: {{ .Values.scenarioUrl | quote }}

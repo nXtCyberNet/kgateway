@@ -1,4 +1,4 @@
-image: ghcr.io/llm-d/inference-perf:latest
+image: curlimages/curl:8.12.1
 scenarioUrl: http://example.com
 targetRps: 20
 durationSeconds: 60
