@@ -1,4 +1,4 @@
-image: curlimages/curl:8.12.1
+image: quay.io/inference-perf/inference-perf:v0.4.0
 scenarioUrl: http://example.com
 targetRps: 20
 durationSeconds: 60

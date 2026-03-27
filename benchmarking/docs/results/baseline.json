@@ -1,7 +1,0 @@
-{
-  "name": "baseline",
-  "timestamp": "2026-03-25T00:00:00Z",
-  "results": {
-    "p99_latency": 0
-  }
-}
