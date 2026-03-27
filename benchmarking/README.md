@@ -260,6 +260,7 @@ Important runtime behavior:
 - Baseline load failure is non-fatal for run start, but regressions are skipped without baseline.
 - Job timeout includes CI startup buffer and has an 8 minute minimum.
 - Runner prints chart path and resolved target URL before Helm install.
+- Service resolution now maps `app: llm-d-sim` to tier Services like `llm-d-sim-large` to avoid routing baseline traffic to a non-existent Service.
 - If job wait fails, runner attempts to include job logs in error output.
 
 ## Metrics, Regression, And Reporting
@@ -311,6 +312,7 @@ Triggers:
 
 Manual inputs:
 
+- mode (`poc` or `full`)
 - scenario
 - data_plane
 - threshold
@@ -318,14 +320,26 @@ Manual inputs:
 
 Pipeline summary:
 
-1. Checkout
-2. Setup Go from `benchmarking/go.mod`
-3. Install kind, kubectl, helm
-4. Run `benchmarking/scripts/setup-kind.sh`
-5. Port-forward Prometheus to localhost
-6. Run runner with chosen inputs
-7. Upload artifacts
-8. PR comments include report summary snippet
+1. `benchmark-poc` job (default for push/PR):
+- checkout + setup Go
+- install kind, kubectl, helm
+- run `benchmarking/scripts/setup-kind.sh`
+- port-forward Prometheus
+- run real `baseline` scenario
+- upload POC artifact (`benchmark-poc-results`)
+
+2. `benchmark-full` job (nightly or manual `mode=full`):
+- checkout + setup Go
+- install kind, kubectl, helm
+- run `benchmarking/scripts/setup-kind.sh`
+- port-forward Prometheus
+- run selected/full benchmark scenarios against real cluster
+- upload full artifacts and PR comment summary when applicable
+
+Why this split exists:
+
+- `benchmark-poc` gives a real baseline benchmark result for PoC/demo workflows.
+- `benchmark-full` preserves full-fidelity integration benchmarking when explicitly requested.
 
 ## Known Issues And Failure Modes
 
@@ -365,6 +379,7 @@ Current handling:
 - retry logic in setup-kind readiness waits
 - larger runner job timeout startup buffer
 - early non-progress detection in job wait path
+- POC workflow now runs a real baseline path (not synthetic), so DNS/image pull stability still matters
 
 ### Scenario drift between YAML and Go constructors
 
@@ -446,6 +461,15 @@ Run baseline only:
 go run ./cmd/runner --scenario baseline --namespace default --prometheus-url http://127.0.0.1:9090 --output results/baseline-run
 ```
 
+Run baseline in stub mode (fast PoC output):
+
+```bash
+go run ./cmd/runner --scenario baseline --stub --output results/poc
+```
+
+Note: stub output is synthetic and intended only for local pipeline sanity checks.
+CI `benchmark-poc` runs a real baseline benchmark.
+
 Run all scenarios with explicit baseline and threshold:
 
 ```bash
@@ -461,5 +485,5 @@ go run ./cmd/runner --scenario all --stub --output results/stub
 Run tests for benchmarking module:
 
 ```bash
-go test ./benchmarking/...
+go test ./...
 ```

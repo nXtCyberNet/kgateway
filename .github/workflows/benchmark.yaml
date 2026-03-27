@@ -64,13 +64,16 @@ concurrency:
 
 jobs:
   benchmark-poc:
-    name: Benchmark POC (baseline stub)
+    name: Benchmark POC (baseline real)
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'poc')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 75
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -79,13 +82,53 @@ jobs:
           cache: true
           cache-dependency-path: benchmarking/go.sum
 
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Install Helm
+        run: |
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
+
+      - name: Run Kind cluster setup + kgateway + Prometheus
+        env:
+          KGATEWAY_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.kgateway_version || 'v2.2.0-main' }}
+        run: |
+          chmod +x benchmarking/scripts/setup-kind.sh
+          benchmarking/scripts/setup-kind.sh
+
+      - name: Port-forward Prometheus to localhost:9090
+        run: |
+          kubectl port-forward -n monitoring svc/prometheus-server 9090:80 > /dev/null 2>&1 &
+          echo "PROMETHEUS_PID=$!" >> $GITHUB_ENV
+          sleep 8
+
       - name: Run minimal POC benchmark
         working-directory: ./benchmarking
         run: |
           go run ./cmd/runner \
             --scenario baseline \
-            --stub \
+            --namespace default \
+            --prometheus-url http://localhost:9090 \
+            --baseline results/baseline.json \
+            --threshold "${{ github.event_name == 'workflow_dispatch' && inputs.threshold || '20' }}" \
+            --data-plane "${{ github.event_name == 'workflow_dispatch' && inputs.data_plane || 'envoy' }}" \
             --output results/poc
+
+      - name: Kill Prometheus port-forward
+        if: always()
+        run: |
+          kill ${{ env.PROMETHEUS_PID }} || true
 
       - name: Upload POC results
         uses: actions/upload-artifact@v4
