@@ -1,0 +1,10 @@
+apiVersion: inference.networking.x-k8s.io/v1
+kind: InferenceModel
+metadata:
+  name: llama-3-8b
+  namespace: default
+spec:
+  modelName: meta-llama/Llama-3-8b
+  poolRef:
+    name: llama-pool
+  criticality: Critical

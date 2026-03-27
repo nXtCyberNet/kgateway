@@ -1,4 +1,18 @@
 name: baseline
 description: TCP direct baseline
-targetRps: 100
+gatewayClass: kgateway
+enableInferenceRouting: false
+enableBodyParsing: false
+targetRPS: 67
 durationSeconds: 120
+concurrentUsers: 10
+warmupSeconds: 15
+backendTiers:
+  - name: tier-large
+    cpuLimit: "2000m"
+    memoryLimit: "2Gi"
+    responseDelayMs: 20
+    replicas: 1
+    labels:
+      tier: large
+    simulatedKVCachePercent: 30

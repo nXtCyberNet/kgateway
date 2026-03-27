@@ -6,6 +6,19 @@ package scenarios
 
 import "fmt"
 
+// ExpectedFairnessDistribution is the target traffic share per tier for S5.
+// The EPP should route ~70% to tier-large (lowest KV cache pressure / fastest),
+// ~20% to tier-medium, and ~10% to tier-small (highest pressure / slowest).
+var ExpectedFairnessDistribution = map[string]float64{
+	"tier-large":  70.0,
+	"tier-medium": 20.0,
+	"tier-small":  10.0,
+}
+
+// FairnessTolerancePct is the maximum allowed deviation from ExpectedFairnessDistribution
+// before CheckFairness reports a violation.
+const FairnessTolerancePct = 5.0
+
 // S5EPPFairness returns the EPP fairness scenario. Three tiers with deliberately skewed
 // KV cache pressure (10% / 50% / 90%) and response delays (50ms / 100ms / 200ms) force
 // the EPP to make non-trivial routing decisions. CheckFairness then validates that actual
@@ -53,9 +66,9 @@ func S5EPPFairness() *Scenario {
 	}
 }
 
-// CheckFairness validates that the actual per-tier traffic distribution matches expected
-// weights within tolerancePct. actual and expected are maps of tier name → percentage (0-100).
-// Returns an error listing every tier that exceeded the tolerance.
+// CheckFairness validates that the actual per-tier traffic distribution matches
+// expected weights within tolerancePct. Both maps are tier name → percentage (0-100).
+// Returns a single error listing every tier that exceeded the tolerance.
 func CheckFairness(actual, expected map[string]float64, tolerancePct float64) error {
 	var violations []string
 
@@ -81,9 +94,9 @@ func CheckFairness(actual, expected map[string]float64, tolerancePct float64) er
 		return nil
 	}
 
-	result := "EPP fairness check failed:\n"
+	msg := "EPP fairness check failed:\n"
 	for _, v := range violations {
-		result += "  - " + v + "\n"
+		msg += "  - " + v + "\n"
 	}
-	return fmt.Errorf("%s", result)
+	return fmt.Errorf("%s", msg)
 }

@@ -1,4 +1,26 @@
 name: header-routing
 description: Gateway header routing
-targetRps: 100
+gatewayClass: kgateway
+enableInferenceRouting: false
+enableBodyParsing: true
+targetRPS: 100
 durationSeconds: 120
+concurrentUsers: 20
+warmupSeconds: 15
+backendTiers:
+  - name: tier-large
+    cpuLimit: "2000m"
+    memoryLimit: "2Gi"
+    responseDelayMs: 25
+    replicas: 1
+    labels:
+      tier: large
+    simulatedKVCachePercent: 35
+  - name: tier-medium
+    cpuLimit: "1000m"
+    memoryLimit: "1Gi"
+    responseDelayMs: 45
+    replicas: 1
+    labels:
+      tier: medium
+    simulatedKVCachePercent: 55

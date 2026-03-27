@@ -3,12 +3,28 @@ kind: Job
 metadata:
   name: inference-perf
 spec:
+  backoffLimit: {{ .Values.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
   template:
     spec:
       containers:
       - name: perf
         image: {{ .Values.image }}
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
         env:
         - name: SCENARIO
-          value: {{ .Values.scenarioUrl }}
+          value: {{ .Values.scenarioUrl | quote }}
+        - name: SCENARIO_URL
+          value: {{ .Values.scenarioUrl | quote }}
+        - name: TARGET_RPS
+          value: {{ .Values.targetRps | quote }}
+        - name: RPS
+          value: {{ .Values.targetRps | quote }}
+        - name: DURATION_SECONDS
+          value: {{ .Values.durationSeconds | quote }}
+        - name: CONCURRENT_USERS
+          value: {{ .Values.concurrentUsers | quote }}
+        - name: WARMUP_SECONDS
+          value: {{ .Values.warmupSeconds | quote }}
       restartPolicy: Never

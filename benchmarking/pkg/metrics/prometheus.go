@@ -18,14 +18,11 @@ import (
 )
 
 // PrometheusClient is a thin wrapper around the official Prometheus HTTP API client.
-// It provides scoped, data-plane-aware queries so that benchmarks never suffer from
-// "metric bleed" in a shared Kind cluster.
 type PrometheusClient struct {
 	api v1.API
 }
 
 // NewPrometheusClient creates a new Prometheus client pointing at the given address.
-// The address is usually the Prometheus service inside the Kind cluster.
 func NewPrometheusClient(address string) (*PrometheusClient, error) {
 	pc, err := api.NewClient(api.Config{Address: address})
 	if err != nil {
@@ -35,38 +32,31 @@ func NewPrometheusClient(address string) (*PrometheusClient, error) {
 }
 
 // ScrapeGatewayMetrics collects all core latency, error, resource, and GenAI-specific
-// metrics for a completed scenario run. It automatically switches PromQL queries
-// based on the data plane ("envoy" vs "agentgateway") and strictly scopes everything
-// by namespace and service/pod to prevent cross-benchmark contamination.
+// metrics for a completed scenario run. Queries are scoped by namespace and service to
+// prevent cross-benchmark metric bleed in a shared Kind cluster. The data-plane flag
+// switches between Envoy and agentgateway metric names automatically.
 func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, service, dataPlane string, scrapeDuration time.Duration) (*scenarios.Results, error) {
 	res := &scenarios.Results{
-		ScenarioName: service,
-		DataPlane:    dataPlane,
-		Timestamp:    time.Now(),
+		DataPlane: dataPlane,
+		Timestamp: time.Now(),
 	}
 
 	dStr := scrapeDuration.String()
 
-	// ------------------------------------------------------------------
-	// 1. Latency percentiles (P50 / P95 / P99)
-	// ------------------------------------------------------------------
+	// 1. Latency percentiles — template and arg order differ per data plane.
 	latencyQueryTpl := p.latencyQueryTemplate(dataPlane)
 	res.P50LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.50, namespace, service, dStr))
 	res.P95LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.95, namespace, service, dStr))
 	res.P99LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.99, namespace, service, dStr))
 
-	// ------------------------------------------------------------------
-	// 2. Error rate
-	// ------------------------------------------------------------------
+	// 2. Error rate.
 	errRate, err := p.errorRateQuery(ctx, namespace, service, dataPlane, dStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query error rate: %w", err)
 	}
 	res.ErrorRate = errRate
 
-	// ------------------------------------------------------------------
-	// 3. Gateway resource usage (CPU in millicores, Memory in MiB)
-	// ------------------------------------------------------------------
+	// 3. Gateway resource usage (CPU in millicores, Memory in MiB).
 	res.GatewayCPUMillicores = p.queryInstant(ctx, fmt.Sprintf(
 		`sum(rate(container_cpu_usage_seconds_total{namespace="%s", pod=~".*kgateway.*|.*gateway.*"}[%s])) * 1000`,
 		namespace, dStr))
@@ -74,16 +64,13 @@ func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, 
 		`sum(container_memory_working_set_bytes{namespace="%s", pod=~".*kgateway.*|.*gateway.*"}) / 1024 / 1024`,
 		namespace))
 
-	// ------------------------------------------------------------------
-	// 4. EPP decision latency (common to both data planes when EPP is enabled)
-	// ------------------------------------------------------------------
+	// 4. EPP decision latency — common to both data planes when inference routing is on.
 	res.EPPDecisionLatencyMs = p.queryInstant(ctx, fmt.Sprintf(
 		`histogram_quantile(0.99, sum by (le) (rate(epp_endpoint_selection_duration_seconds_bucket{namespace="%s"}[%s]))) * 1000`,
 		namespace, dStr))
 
-	// ------------------------------------------------------------------
-	// 5. GenAI streaming metrics (TTFT / ITL) — only available on agentgateway
-	// ------------------------------------------------------------------
+	// 5. GenAI streaming metrics — native labels only exist on agentgateway.
+	// For Envoy, these are populated by the direct SSE client in streaming.go instead.
 	if dataPlane == "agentgateway" {
 		res.TTFTMeanMs = p.queryInstant(ctx, fmt.Sprintf(
 			`avg(agentgateway_latency_ttft_seconds{namespace="%s"}) * 1000`, namespace))
@@ -97,11 +84,13 @@ func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, 
 	return res, nil
 }
 
-// ScrapeTierDistribution returns the percentage distribution of requests across
-// backend tiers (large/medium/small). Used by the EPP fairness scenario.
+// ScrapeTierDistribution returns the percentage of requests handled by each backend tier.
+// Used by the EPP fairness scenario (S5) to validate the 70/20/10 expected distribution.
 func (p *PrometheusClient) ScrapeTierDistribution(ctx context.Context, namespace string, duration time.Duration) (map[string]float64, error) {
-	query := fmt.Sprintf(`sum by (tier) (rate(agentgateway_requests_total{namespace="%s"}[%s])) / sum(rate(agentgateway_requests_total{namespace="%s"}[%s])) * 100`,
-		namespace, duration.String(), namespace, duration.String())
+	dStr := duration.String()
+	query := fmt.Sprintf(
+		`sum by (tier) (rate(agentgateway_requests_total{namespace="%s"}[%s])) / ignoring(tier) group_left sum(rate(agentgateway_requests_total{namespace="%s"}[%s])) * 100`,
+		namespace, dStr, namespace, dStr)
 
 	val, _, err := p.api.Query(ctx, query, time.Now())
 	if err != nil {
@@ -112,20 +101,24 @@ func (p *PrometheusClient) ScrapeTierDistribution(ctx context.Context, namespace
 	if vector, ok := val.(model.Vector); ok {
 		for _, sample := range vector {
 			if tier := string(sample.Metric["tier"]); tier != "" {
-				dist[tier] = float64(sample.Value)
+				dist["tier-"+tier] = float64(sample.Value)
 			}
 		}
 	}
 	return dist, nil
 }
 
-// latencyQueryTemplate returns the correct PromQL template for the given data plane.
+// latencyQueryTemplate returns the PromQL template for the given data plane.
+// Both templates accept args in order: (quantile float, namespace string, service string, duration string).
+// The Envoy template matches the cluster name by service name because Envoy encodes
+// the upstream service in envoy_cluster_name, not in a separate label.
 func (p *PrometheusClient) latencyQueryTemplate(dataPlane string) string {
 	if dataPlane == "envoy" {
-		// Envoy cluster names are dynamic (e.g. outbound|8080||llm-d-sim-large.default.svc.cluster.local)
-		return `histogram_quantile(%g, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name=~".*%s.*", namespace="%s"}[%s])))`
+		// arg order: %g=quantile, first %s=namespace, second %s=service (cluster name match), third %s=duration
+		return `histogram_quantile(%g, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace="%s", envoy_cluster_name=~".*%s.*"}[%s])))`
 	}
-	// agentgateway (Rust) uses standard histogram labels
+	// agentgateway uses standard prometheus labels
+	// arg order: %g=quantile, first %s=namespace, second %s=service, third %s=duration
 	return `histogram_quantile(%g, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{namespace="%s", service="%s"}[%s])))`
 }
 
@@ -133,18 +126,20 @@ func (p *PrometheusClient) latencyQueryTemplate(dataPlane string) string {
 func (p *PrometheusClient) errorRateQuery(ctx context.Context, namespace, service, dataPlane, duration string) (float64, error) {
 	var q string
 	if dataPlane == "envoy" {
-		q = fmt.Sprintf(`sum(rate(envoy_cluster_upstream_rq_xx{envoy_cluster_name=~".*%s.*", namespace="%s", code=~"4..|5.."}[%s])) / sum(rate(envoy_cluster_upstream_rq_total{envoy_cluster_name=~".*%s.*", namespace="%s"}[%s]))`,
-			service, namespace, duration, service, namespace, duration)
+		q = fmt.Sprintf(
+			`sum(rate(envoy_cluster_upstream_rq_xx{namespace="%s", envoy_cluster_name=~".*%s.*", code=~"4..|5.."}[%s])) / sum(rate(envoy_cluster_upstream_rq_total{namespace="%s", envoy_cluster_name=~".*%s.*"}[%s]))`,
+			namespace, service, duration, namespace, service, duration)
 	} else {
-		q = fmt.Sprintf(`sum(rate(agentgateway_requests_total{namespace="%s", service="%s", code=~"4..|5.."}[%s])) / sum(rate(agentgateway_requests_total{namespace="%s", service="%s"}[%s]))`,
+		q = fmt.Sprintf(
+			`sum(rate(agentgateway_requests_total{namespace="%s", service="%s", code=~"4..|5.."}[%s])) / sum(rate(agentgateway_requests_total{namespace="%s", service="%s"}[%s]))`,
 			namespace, service, duration, namespace, service, duration)
 	}
-
 	return p.queryWithRetry(ctx, q)
 }
 
-// queryWithRetry executes a PromQL query with exponential-backoff retries.
-// Returns the first non-zero value or the last result after max attempts.
+// queryWithRetry executes a PromQL instant query with exponential-backoff retries.
+// A zero result on the first attempt triggers a retry — this handles the common case
+// where Prometheus hasn't yet scraped metrics at the start of a benchmark window.
 func (p *PrometheusClient) queryWithRetry(ctx context.Context, query string) (float64, error) {
 	const attempts = 3
 	for i := 0; i < attempts; i++ {
@@ -157,8 +152,8 @@ func (p *PrometheusClient) queryWithRetry(ctx context.Context, query string) (fl
 	return 0, nil
 }
 
-// queryInstant is the low-level helper that executes a PromQL instant query.
-// It returns 0 on any error (so the benchmark never aborts on a transient scrape issue).
+// queryInstant executes a PromQL instant query and returns the first scalar value.
+// Returns 0 on any error so a transient scrape failure never aborts the benchmark.
 func (p *PrometheusClient) queryInstant(ctx context.Context, query string) float64 {
 	val, _, err := p.api.Query(ctx, query, time.Now())
 	if err != nil || val == nil {

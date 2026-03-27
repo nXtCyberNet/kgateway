@@ -1,10 +1,7 @@
-// pkg/scenarios/types.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package scenarios
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -97,7 +94,9 @@ func LoadFromYAML(ctx context.Context, path string) (*Scenario, error) {
 	}
 
 	var s Scenario
-	if err := yaml.Unmarshal(data, &s); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&s); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal YAML from %s: %w", path, err)
 	}
 

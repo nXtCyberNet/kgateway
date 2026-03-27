@@ -68,6 +68,7 @@ func NewK8sClient(kubeconfig string) (*K8sClient, error) {
 // are all in Running/Ready state, or until timeout elapses.
 func (c *K8sClient) WaitForPodsReady(ctx context.Context, namespace, labelSelector string, count int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastPods []corev1.Pod
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -81,6 +82,7 @@ func (c *K8sClient) WaitForPodsReady(ctx context.Context, namespace, labelSelect
 		if err != nil {
 			return fmt.Errorf("failed to list pods in %s: %w", namespace, err)
 		}
+		lastPods = pods.Items
 
 		ready := 0
 		for _, pod := range pods.Items {
@@ -95,8 +97,30 @@ func (c *K8sClient) WaitForPodsReady(ctx context.Context, namespace, labelSelect
 		time.Sleep(5 * time.Second)
 	}
 
-	return fmt.Errorf("timed out after %s waiting for %d pods with selector %q in %s",
-		timeout, count, labelSelector, namespace)
+	if len(lastPods) == 0 {
+		return fmt.Errorf("timed out after %s waiting for %d pods with selector %q in %s (no pods found)",
+			timeout, count, labelSelector, namespace)
+	}
+
+	var details strings.Builder
+	for _, pod := range lastPods {
+		details.WriteString(fmt.Sprintf("%s phase=%s", pod.Name, pod.Status.Phase))
+		if pod.Spec.NodeName != "" {
+			details.WriteString(fmt.Sprintf(" node=%s", pod.Spec.NodeName))
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil {
+				details.WriteString(fmt.Sprintf(" container=%s waiting=%s(%s)", cs.Name, cs.State.Waiting.Reason, cs.State.Waiting.Message))
+			}
+			if cs.State.Terminated != nil {
+				details.WriteString(fmt.Sprintf(" container=%s terminated=%s(%s)", cs.Name, cs.State.Terminated.Reason, cs.State.Terminated.Message))
+			}
+		}
+		details.WriteString("; ")
+	}
+
+	return fmt.Errorf("timed out after %s waiting for %d pods with selector %q in %s; pod details: %s",
+		timeout, count, labelSelector, namespace, strings.TrimSpace(details.String()))
 }
 
 // GetPodName returns the name of the first Running pod matching labelSelector in namespace.
@@ -200,8 +224,6 @@ func (c *K8sClient) HelmInstall(ctx context.Context, release, chartPath, ns stri
 		"--namespace", ns,
 		"--create-namespace",
 		"--values", tmpFile.Name(),
-		"--wait",
-		"--timeout", "5m",
 	}
 
 	cmd := exec.CommandContext(ctx, "helm", args...)

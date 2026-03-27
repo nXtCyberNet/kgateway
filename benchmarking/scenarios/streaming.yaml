@@ -1,5 +1,26 @@
 name: streaming
 description: "Streaming scenario"
-target_rps: 20
-duration_seconds: 60
-concurrent_users: 5
+gatewayClass: kgateway
+enableInferenceRouting: true
+enableBodyParsing: true
+targetRPS: 20
+durationSeconds: 60
+concurrentUsers: 5
+warmupSeconds: 10
+backendTiers:
+  - name: tier-large
+    cpuLimit: "2000m"
+    memoryLimit: "2Gi"
+    responseDelayMs: 25
+    replicas: 1
+    labels:
+      tier: large
+    simulatedKVCachePercent: 40
+  - name: tier-small
+    cpuLimit: "500m"
+    memoryLimit: "512Mi"
+    responseDelayMs: 90
+    replicas: 1
+    labels:
+      tier: small
+    simulatedKVCachePercent: 85

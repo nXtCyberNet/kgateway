@@ -1,4 +1,34 @@
 name: epp-fairness
 description: EPP Fairness Check
-targetRps: 50
+gatewayClass: kgateway
+enableInferenceRouting: true
+enableBodyParsing: true
+targetRPS: 50
 durationSeconds: 120
+concurrentUsers: 15
+warmupSeconds: 15
+backendTiers:
+  - name: tier-large
+    cpuLimit: "2000m"
+    memoryLimit: "2Gi"
+    responseDelayMs: 20
+    replicas: 1
+    labels:
+      tier: large
+    simulatedKVCachePercent: 25
+  - name: tier-medium
+    cpuLimit: "1000m"
+    memoryLimit: "1Gi"
+    responseDelayMs: 40
+    replicas: 1
+    labels:
+      tier: medium
+    simulatedKVCachePercent: 50
+  - name: tier-small
+    cpuLimit: "500m"
+    memoryLimit: "512Mi"
+    responseDelayMs: 70
+    replicas: 1
+    labels:
+      tier: small
+    simulatedKVCachePercent: 75

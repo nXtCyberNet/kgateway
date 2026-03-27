@@ -1,5 +1,18 @@
 name: 1-direct
 description: "Baseline scenario sending traffic directly to backends"
-target_rps: 50
-duration_seconds: 60
-concurrent_users: 5
+gatewayClass: kgateway
+enableInferenceRouting: false
+enableBodyParsing: false
+targetRPS: 50
+durationSeconds: 60
+concurrentUsers: 5
+warmupSeconds: 10
+backendTiers:
+  - name: tier-large
+    cpuLimit: "2000m"
+    memoryLimit: "2Gi"
+    responseDelayMs: 20
+    replicas: 1
+    labels:
+      tier: large
+    simulatedKVCachePercent: 30

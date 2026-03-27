@@ -15,17 +15,6 @@ import (
 	"time"
 )
 
-// ExpectedFairnessDistribution is the target traffic share per tier (used by S5).
-// Exported so epp_fairness.go and the runner can reference it without magic numbers.
-var ExpectedFairnessDistribution = map[string]float64{
-	"tier-large":  70.0,
-	"tier-medium": 20.0,
-	"tier-small":  10.0,
-}
-
-// FairnessTolerancePct is the allowed deviation from ExpectedFairnessDistribution.
-const FairnessTolerancePct = 5.0
-
 // S4Streaming returns the SSE streaming scenario. Lower RPS and longer duration give
 // enough steady-state stream data for statistically meaningful TTFT and ITL measurements.
 func S4Streaming() *Scenario {
@@ -59,10 +48,12 @@ type StreamingResult struct {
 	ITLMeanUs float64
 }
 
-// MeasureStreamingMetrics sends a single SSE request to url for the given model,
-// records TTFT (time to first data: chunk) and mean ITL (mean delta between chunks).
-func MeasureStreamingMetrics(ctx context.Context, url, model string) (*StreamingResult, error) {
-	req, err := createStreamingRequest(ctx, url, model)
+// MeasureStreamingMetrics sends a single SSE request to baseURL for the given model
+// and records TTFT (time to first data: chunk) and mean ITL (mean delta between chunks).
+// baseURL must be the base address only (e.g. "http://localhost:8080") — the
+// /v1/completions path is appended internally.
+func MeasureStreamingMetrics(ctx context.Context, baseURL, model string) (*StreamingResult, error) {
+	req, err := createStreamingRequest(ctx, baseURL, model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build streaming request: %w", err)
 	}
@@ -88,7 +79,7 @@ func MeasureStreamingMetrics(ctx context.Context, url, model string) (*Streaming
 
 // MeasureStreamingMetricsSampled runs MeasureStreamingMetrics n times and returns
 // the mean TTFT and ITL across successful samples, reducing measurement noise.
-func MeasureStreamingMetricsSampled(ctx context.Context, url, model string, n int) (ttftMeanMs, itlMeanUs float64, err error) {
+func MeasureStreamingMetricsSampled(ctx context.Context, baseURL, model string, n int) (ttftMeanMs, itlMeanUs float64, err error) {
 	var ttftSum, itlSum float64
 	var successes int
 
@@ -99,7 +90,7 @@ func MeasureStreamingMetricsSampled(ctx context.Context, url, model string, n in
 		default:
 		}
 
-		result, sampleErr := MeasureStreamingMetrics(ctx, url, model)
+		result, sampleErr := MeasureStreamingMetrics(ctx, baseURL, model)
 		if sampleErr != nil {
 			continue
 		}
@@ -115,11 +106,10 @@ func MeasureStreamingMetricsSampled(ctx context.Context, url, model string, n in
 	return ttftSum / float64(successes), itlSum / float64(successes), nil
 }
 
-// createStreamingRequest builds an HTTP POST for the OpenAI-compatible /v1/completions
-// endpoint with stream:true. The Accept and Content-Type headers are both required —
+// createStreamingRequest builds an HTTP POST to baseURL/v1/completions with stream:true.
 // Accept: text/event-stream tells the simulator to send SSE chunks rather than a
 // single buffered JSON response.
-func createStreamingRequest(ctx context.Context, url, model string) (*http.Request, error) {
+func createStreamingRequest(ctx context.Context, baseURL, model string) (*http.Request, error) {
 	body := map[string]interface{}{
 		"model":      model,
 		"prompt":     "Tell me about AI gateway routing.",
@@ -132,7 +122,9 @@ func createStreamingRequest(ctx context.Context, url, model string) (*http.Reque
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/v1/completions", bytes.NewReader(encoded))
+	// baseURL must not already contain the path — append it here exactly once.
+	endpoint := strings.TrimRight(baseURL, "/") + "/v1/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
@@ -143,8 +135,8 @@ func createStreamingRequest(ctx context.Context, url, model string) (*http.Reque
 	return req, nil
 }
 
-// consumeSSEStream reads SSE chunks from resp line by line. It records the time of
-// the first data: chunk as TTFT and the mean delta between subsequent chunks as ITL.
+// consumeSSEStream reads SSE chunks line by line. Records the time of the first
+// data: chunk as TTFT and the mean delta between subsequent chunks as ITL.
 func consumeSSEStream(resp *http.Response, reqStart time.Time) (ttftMs float64, itlMeanUs float64, err error) {
 	var chunkTimestamps []time.Time
 
@@ -154,7 +146,6 @@ func consumeSSEStream(resp *http.Response, reqStart time.Time) (ttftMs float64, 
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
-		// Skip the SSE stream terminator.
 		if strings.TrimSpace(strings.TrimPrefix(line, "data:")) == "[DONE]" {
 			break
 		}
@@ -175,8 +166,8 @@ func consumeSSEStream(resp *http.Response, reqStart time.Time) (ttftMs float64, 
 	return ttftMs, itlMeanUs, nil
 }
 
-// calculateMeanITL returns the mean inter-token latency in microseconds across
-// consecutive chunk timestamps. Returns 0 when fewer than 2 chunks were received.
+// calculateMeanITL returns the mean inter-token latency in microseconds.
+// Returns 0 when fewer than 2 chunks were received.
 func calculateMeanITL(timestamps []time.Time) float64 {
 	if len(timestamps) < 2 {
 		return 0

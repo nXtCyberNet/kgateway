@@ -1,2 +1,10 @@
 image: ghcr.io/llm-d/inference-perf:latest
 scenarioUrl: http://example.com
+targetRps: 20
+durationSeconds: 60
+concurrentUsers: 5
+warmupSeconds: 10
+activeDeadlineSeconds: 240
+backoffLimit: 0
+ttlSecondsAfterFinished: 300
+imagePullPolicy: IfNotPresent
