@@ -44,10 +44,18 @@ func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, 
 	dStr := scrapeDuration.String()
 
 	// 1. Latency percentiles — template and arg order differ per data plane.
-	latencyQueryTpl := p.latencyQueryTemplate(dataPlane)
-	res.P50LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.50, namespace, service, dStr))
-	res.P95LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.95, namespace, service, dStr))
-	res.P99LatencyMs, _ = p.queryWithRetry(ctx, fmt.Sprintf(latencyQueryTpl, 0.99, namespace, service, dStr))
+	latencyP50 := p.latencyQuery(dataPlane, 0.50, namespace, service, dStr)
+	latencyP95 := p.latencyQuery(dataPlane, 0.95, namespace, service, dStr)
+	latencyP99 := p.latencyQuery(dataPlane, 0.99, namespace, service, dStr)
+	res.P50LatencyMs, _ = p.queryWithRetry(ctx, latencyP50)
+	res.P95LatencyMs, _ = p.queryWithRetry(ctx, latencyP95)
+	res.P99LatencyMs, _ = p.queryWithRetry(ctx, latencyP99)
+
+	meanLatency, err := p.meanLatencyQuery(ctx, namespace, service, dataPlane, dStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query mean latency: %w", err)
+	}
+	res.MeanLatencyMs = meanLatency
 
 	// 2. Error rate.
 	errRate, err := p.errorRateQuery(ctx, namespace, service, dataPlane, dStr)
@@ -55,6 +63,12 @@ func (p *PrometheusClient) ScrapeGatewayMetrics(ctx context.Context, namespace, 
 		return nil, fmt.Errorf("failed to query error rate: %w", err)
 	}
 	res.ErrorRate = errRate
+
+	rps, err := p.throughputQuery(ctx, namespace, service, dataPlane, dStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query throughput: %w", err)
+	}
+	res.ThroughputRPS = rps
 
 	// 3. Gateway resource usage (CPU in millicores, Memory in MiB).
 	res.GatewayCPUMillicores = p.queryInstant(ctx, fmt.Sprintf(
@@ -114,12 +128,21 @@ func (p *PrometheusClient) ScrapeTierDistribution(ctx context.Context, namespace
 // the upstream service in envoy_cluster_name, not in a separate label.
 func (p *PrometheusClient) latencyQueryTemplate(dataPlane string) string {
 	if dataPlane == "envoy" {
-		// arg order: %g=quantile, first %s=namespace, second %s=service (cluster name match), third %s=duration
-		return `histogram_quantile(%g, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace="%s", envoy_cluster_name=~".*%s.*"}[%s])))`
+		// Envoy metrics generally do not expose a namespace label in this deployment,
+		// so scope by cluster name only.
+		return `histogram_quantile(%g, sum by (le) (rate(envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name=~".*%s.*"}[%s])))`
 	}
 	// agentgateway uses standard prometheus labels
 	// arg order: %g=quantile, first %s=namespace, second %s=service, third %s=duration
 	return `histogram_quantile(%g, sum by (le) (rate(agentgateway_request_duration_seconds_bucket{namespace="%s", service="%s"}[%s])))`
+}
+
+func (p *PrometheusClient) latencyQuery(dataPlane string, quantile float64, namespace, service, duration string) string {
+	tpl := p.latencyQueryTemplate(dataPlane)
+	if dataPlane == "envoy" {
+		return fmt.Sprintf(tpl, quantile, service, duration)
+	}
+	return fmt.Sprintf(tpl, quantile, namespace, service, duration)
 }
 
 // errorRateQuery builds and executes the error-rate query for the selected data plane.
@@ -127,11 +150,39 @@ func (p *PrometheusClient) errorRateQuery(ctx context.Context, namespace, servic
 	var q string
 	if dataPlane == "envoy" {
 		q = fmt.Sprintf(
-			`sum(rate(envoy_cluster_upstream_rq_xx{namespace="%s", envoy_cluster_name=~".*%s.*", code=~"4..|5.."}[%s])) / sum(rate(envoy_cluster_upstream_rq_total{namespace="%s", envoy_cluster_name=~".*%s.*"}[%s]))`,
-			namespace, service, duration, namespace, service, duration)
+			`sum(rate(envoy_cluster_upstream_rq_xx{envoy_cluster_name=~".*%s.*", code=~"4..|5.."}[%s])) / sum(rate(envoy_cluster_upstream_rq_total{envoy_cluster_name=~".*%s.*"}[%s]))`,
+			service, duration, service, duration)
 	} else {
 		q = fmt.Sprintf(
 			`sum(rate(agentgateway_requests_total{namespace="%s", service="%s", code=~"4..|5.."}[%s])) / sum(rate(agentgateway_requests_total{namespace="%s", service="%s"}[%s]))`,
+			namespace, service, duration, namespace, service, duration)
+	}
+	return p.queryWithRetry(ctx, q)
+}
+
+func (p *PrometheusClient) throughputQuery(ctx context.Context, namespace, service, dataPlane, duration string) (float64, error) {
+	var q string
+	if dataPlane == "envoy" {
+		q = fmt.Sprintf(
+			`sum(rate(envoy_cluster_upstream_rq_total{envoy_cluster_name=~".*%s.*"}[%s]))`,
+			service, duration)
+	} else {
+		q = fmt.Sprintf(
+			`sum(rate(agentgateway_requests_total{namespace="%s", service="%s"}[%s]))`,
+			namespace, service, duration)
+	}
+	return p.queryWithRetry(ctx, q)
+}
+
+func (p *PrometheusClient) meanLatencyQuery(ctx context.Context, namespace, service, dataPlane, duration string) (float64, error) {
+	var q string
+	if dataPlane == "envoy" {
+		q = fmt.Sprintf(
+			`(sum(rate(envoy_cluster_upstream_rq_time_sum{envoy_cluster_name=~".*%s.*"}[%s])) / sum(rate(envoy_cluster_upstream_rq_time_count{envoy_cluster_name=~".*%s.*"}[%s]))) * 1000`,
+			service, duration, service, duration)
+	} else {
+		q = fmt.Sprintf(
+			`(sum(rate(agentgateway_request_duration_seconds_sum{namespace="%s", service="%s"}[%s])) / sum(rate(agentgateway_request_duration_seconds_count{namespace="%s", service="%s"}[%s]))) * 1000`,
 			namespace, service, duration, namespace, service, duration)
 	}
 	return p.queryWithRetry(ctx, q)

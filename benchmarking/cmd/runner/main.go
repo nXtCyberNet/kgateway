@@ -353,7 +353,6 @@ func executeScenario(
 
 	result.ScenarioName = scenario.Name
 	result.DataPlane = dataPlane
-	result.ThroughputRPS = float64(scenario.TargetRPS) * 0.92
 
 	// ── Streaming-specific: direct SSE measurement ───────────────────────────
 	// Pass only the base URL — createStreamingRequest appends the path internally.
