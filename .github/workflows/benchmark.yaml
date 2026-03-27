@@ -2,6 +2,11 @@
 name: "Inference Routing Benchmark"
 
 on:
+  push:
+    paths:
+      - "benchmarking/**"
+      - ".github/workflows/benchmark.yaml"
+
   # Run on any change inside the benchmarking directory (PRs)
   pull_request:
     paths:
