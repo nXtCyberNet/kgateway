@@ -252,6 +252,14 @@ func executeScenario(
 	}
 	appliedFiles = append(appliedFiles, gatewayFile)
 
+	// Apply HTTPRoute so the gateway has routing rules. Without this the gateway
+	// listener returns 404 for every request and no upstream metrics are emitted.
+	httprouteFile := filepath.Join(manifestsRoot, "httproute.yaml")
+	if err := k8sClient.ApplyManifestFile(ctx, httprouteFile); err != nil {
+		return nil, fmt.Errorf("apply httproute manifest %s: %w", httprouteFile, err)
+	}
+	appliedFiles = append(appliedFiles, httprouteFile)
+
 	if scenario.EnableInferenceRouting {
 		inferencePoolFile := filepath.Join(manifestsRoot, "inference-pool.yaml")
 		appliedPoolFile, err := applyInferenceManifestWithFallback(ctx, k8sClient, manifestsRoot, inferencePoolFile)
@@ -310,7 +318,11 @@ func executeScenario(
 	fmt.Printf("   Generating load (%d RPS for %ds)...\n", scenario.TargetRPS, scenario.DurationSeconds)
 	serviceName := serviceNameForScenario(scenario)
 	chartPath := filepath.Join(benchmarkingRoot, "helm", "inference-perf")
-	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8000", serviceName, namespace)
+	// Traffic MUST go through the gateway so Envoy upstream metrics are emitted.
+	// The gateway listener is on port 8080; the gateway Service name is set by
+	// the Gateway manifest (envoy: "envoy-gateway", default: "inference-gateway").
+	gatewaySvcName := gatewayServiceName(dataPlane)
+	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", gatewaySvcName, namespace)
 	fmt.Printf("   Chart path: %s\n", chartPath)
 	fmt.Printf("   Target Base URL: %s\n", targetURL)
 	// CI image pulls can be slow; include larger startup buffer so benchmark jobs
@@ -320,14 +332,19 @@ func executeScenario(
 		jobTimeout = 8 * time.Minute
 	}
 	activeDeadlineSeconds := int(math.Ceil(jobTimeout.Seconds()))
-	if err := k8sClient.HelmInstall(ctx, "inference-perf", chartPath, namespace, map[string]interface{}{
+	helmParams := map[string]interface{}{
 		"scenarioUrl":           targetURL,
 		"targetRps":             scenario.TargetRPS,
 		"durationSeconds":       scenario.DurationSeconds,
 		"concurrentUsers":       scenario.ConcurrentUsers,
 		"warmupSeconds":         scenario.WarmupSeconds,
 		"activeDeadlineSeconds": activeDeadlineSeconds,
-	}); err != nil {
+	}
+	if scenario.DataType != "" {
+		helmParams["dataType"] = scenario.DataType
+	}
+
+	if err := k8sClient.HelmInstall(ctx, "inference-perf", chartPath, namespace, helmParams); err != nil {
 		return nil, fmt.Errorf("helm install inference-perf: %w", err)
 	}
 
@@ -397,6 +414,16 @@ func executeScenario(
 
 	fmt.Printf("   ✅ %s done (P99=%.2fms)\n", scenario.Name, result.P99LatencyMs)
 	return result, nil
+}
+
+// gatewayServiceName returns the Kubernetes Service name that kgateway creates for
+// the Gateway object. The name must match the `metadata.name` of the applied Gateway
+// manifest so that the in-cluster URL resolves correctly.
+func gatewayServiceName(dataPlane string) string {
+	if dataPlane == "envoy" {
+		return "envoy-gateway" // matches manifests/envoy/gateway.yaml
+	}
+	return "inference-gateway" // matches manifests/gateway.yaml
 }
 
 // serviceNameForScenario derives a concrete simulator Service name for the first tier.

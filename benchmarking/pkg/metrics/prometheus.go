@@ -177,8 +177,10 @@ func (p *PrometheusClient) throughputQuery(ctx context.Context, namespace, servi
 func (p *PrometheusClient) meanLatencyQuery(ctx context.Context, namespace, service, dataPlane, duration string) (float64, error) {
 	var q string
 	if dataPlane == "envoy" {
+		// envoy_cluster_upstream_rq_time is reported in milliseconds already;
+		// no unit conversion needed (do NOT multiply by 1000).
 		q = fmt.Sprintf(
-			`(sum(rate(envoy_cluster_upstream_rq_time_sum{envoy_cluster_name=~".*%s.*"}[%s])) / sum(rate(envoy_cluster_upstream_rq_time_count{envoy_cluster_name=~".*%s.*"}[%s]))) * 1000`,
+			`sum(rate(envoy_cluster_upstream_rq_time_sum{envoy_cluster_name=~".*%s.*"}[%s])) / sum(rate(envoy_cluster_upstream_rq_time_count{envoy_cluster_name=~".*%s.*"}[%s]))`,
 			service, duration, service, duration)
 	} else {
 		q = fmt.Sprintf(

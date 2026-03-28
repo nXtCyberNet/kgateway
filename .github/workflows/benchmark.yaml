@@ -118,6 +118,7 @@ jobs:
         run: |
           go run ./cmd/runner \
             --scenario baseline \
+            --scenarios-dir ./scenarios \
             --namespace default \
             --prometheus-url http://localhost:9090 \
             --baseline results/baseline.json \
@@ -194,6 +195,7 @@ jobs:
         run: |
           go run ./cmd/runner \
             --scenario "${{ github.event_name == 'workflow_dispatch' && inputs.scenario || 'all' }}" \
+            --scenarios-dir ./scenarios \
             --namespace default \
             --prometheus-url http://localhost:9090 \
             --baseline results/baseline.json \

@@ -3,6 +3,7 @@ description: TCP direct baseline
 gatewayClass: kgateway
 enableInferenceRouting: false
 enableBodyParsing: false
+dataType: shareGPT
 targetRPS: 100
 durationSeconds: 120
 concurrentUsers: 10

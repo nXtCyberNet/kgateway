@@ -21,6 +21,7 @@ type Scenario struct {
 	DurationSeconds        int           `yaml:"durationSeconds"`
 	ConcurrentUsers        int           `yaml:"concurrentUsers"`
 	WarmupSeconds          int           `yaml:"warmupSeconds"`
+	DataType               string        `yaml:"dataType,omitempty"`
 	BackendTiers           []BackendTier `yaml:"backendTiers"`
 }
 

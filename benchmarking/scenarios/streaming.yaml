@@ -3,6 +3,7 @@ description: "Streaming scenario"
 gatewayClass: kgateway
 enableInferenceRouting: true
 enableBodyParsing: true
+dataType: shareGPT
 targetRPS: 20
 durationSeconds: 60
 concurrentUsers: 5

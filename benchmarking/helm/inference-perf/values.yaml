@@ -8,7 +8,7 @@ apiType: completion
 streaming: false
 serverType: vllm
 modelName: HuggingFaceTB/SmolLM2-135M-Instruct
-dataType: mock
+dataType: shareGPT
 activeDeadlineSeconds: 240
 backoffLimit: 0
 ttlSecondsAfterFinished: 300
