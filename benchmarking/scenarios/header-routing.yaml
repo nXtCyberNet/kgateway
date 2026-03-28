@@ -1,6 +1,7 @@
 name: header-routing
 description: Gateway header routing
 gatewayClass: kgateway
+directToSimulator: false
 enableInferenceRouting: false
 enableBodyParsing: false
 dataType: synthetic

@@ -12,9 +12,12 @@ import (
 
 // Scenario defines a single benchmarking scenario loaded from YAML files in benchmarking/scenarios/.
 type Scenario struct {
-	Name                   string        `yaml:"name"`
-	Description            string        `yaml:"description"`
-	GatewayClass           string        `yaml:"gatewayClass"`
+	Name         string `yaml:"name"`
+	Description  string `yaml:"description"`
+	GatewayClass string `yaml:"gatewayClass"`
+	// DirectToSimulator bypasses gateway routing and sends load directly to the
+	// first simulator Service on port 8000. Used by baseline control scenarios.
+	DirectToSimulator      bool          `yaml:"directToSimulator,omitempty"`
 	EnableInferenceRouting bool          `yaml:"enableInferenceRouting"`
 	EnableBodyParsing      bool          `yaml:"enableBodyParsing"`
 	TargetRPS              int           `yaml:"targetRPS"`

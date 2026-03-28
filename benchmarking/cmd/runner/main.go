@@ -318,11 +318,17 @@ func executeScenario(
 	fmt.Printf("   Generating load (%d RPS for %ds)...\n", scenario.TargetRPS, scenario.DurationSeconds)
 	serviceName := serviceNameForScenario(scenario)
 	chartPath := filepath.Join(benchmarkingRoot, "helm", "inference-perf")
-	// Traffic MUST go through the gateway so Envoy upstream metrics are emitted.
-	// The gateway listener is on port 8080; the gateway Service name is set by
-	// the Gateway manifest (envoy: "envoy-gateway", default: "inference-gateway").
-	gatewaySvcName := gatewayServiceName(dataPlane)
-	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", gatewaySvcName, namespace)
+	// Baseline control scenarios may bypass the gateway and hit simulator directly.
+	// All other scenarios route through the gateway Service on port 8080.
+	var targetURL string
+	if scenario.DirectToSimulator {
+		targetURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:8000", serviceName, namespace)
+		fmt.Printf("   Route mode: direct-to-simulator\n")
+	} else {
+		gatewaySvcName := gatewayServiceName(dataPlane)
+		targetURL = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", gatewaySvcName, namespace)
+		fmt.Printf("   Route mode: via-gateway\n")
+	}
 	fmt.Printf("   Chart path: %s\n", chartPath)
 	fmt.Printf("   Target Base URL: %s\n", targetURL)
 	// CI image pulls can be slow; include larger startup buffer so benchmark jobs

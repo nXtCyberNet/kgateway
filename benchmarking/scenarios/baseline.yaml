@@ -1,6 +1,7 @@
 name: baseline
-description: TCP direct baseline
+description: Direct-to-simulator baseline (gateway bypass)
 gatewayClass: kgateway
+directToSimulator: true
 enableInferenceRouting: false
 enableBodyParsing: false
 dataType: synthetic

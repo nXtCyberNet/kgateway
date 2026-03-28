@@ -1,6 +1,0 @@
-apiVersion: v2
-name: inference-perf
-description: Helm chart for inference performance testing Job
-type: application
-version: 0.1.0
-appVersion: "1.0.0"

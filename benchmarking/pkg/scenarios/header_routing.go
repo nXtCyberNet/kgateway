@@ -1,12 +1,5 @@
-// pkg/scenarios/header_routing.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package scenarios
 
-// S2HeaderRouting returns the header-routing scenario: gateway enabled, inference routing OFF,
-// routes by x-model-name HTTP header. RPS and duration are identical to S1 so that
-// the delta in P99 isolates pure L7 header-inspection overhead.
 func S2HeaderRouting() *Scenario {
 	return &Scenario{
 		Name:                   "header-routing",

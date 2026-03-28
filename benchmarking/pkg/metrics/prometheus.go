@@ -6,6 +6,7 @@ package metrics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -21,6 +22,9 @@ import (
 type PrometheusClient struct {
 	api v1.API
 }
+
+// ErrNoSample indicates Prometheus query succeeded but returned no vector samples.
+var ErrNoSample = errors.New("prometheus query returned no samples")
 
 // NewPrometheusClient creates a new Prometheus client pointing at the given address.
 func NewPrometheusClient(address string) (*PrometheusClient, error) {
@@ -191,29 +195,64 @@ func (p *PrometheusClient) meanLatencyQuery(ctx context.Context, namespace, serv
 }
 
 // queryWithRetry executes a PromQL instant query with exponential-backoff retries.
-// A zero result on the first attempt triggers a retry — this handles the common case
-// where Prometheus hasn't yet scraped metrics at the start of a benchmark window.
+// Retries occur on query errors or when no sample is returned yet. A sample value of
+// zero is considered valid (for example, 0% error rate) and is returned immediately.
 func (p *PrometheusClient) queryWithRetry(ctx context.Context, query string) (float64, error) {
 	const attempts = 3
+	var lastErr error
+	missingSample := false
 	for i := 0; i < attempts; i++ {
-		val := p.queryInstant(ctx, query)
-		if val > 0 || i == attempts-1 {
+		val, hasSample, err := p.queryInstantWithStatus(ctx, query)
+		if err == nil && hasSample {
 			return val, nil
 		}
-		time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second)
+		if err != nil {
+			lastErr = err
+		} else {
+			missingSample = true
+		}
+
+		if i < attempts-1 {
+			time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second)
+		}
 	}
-	return 0, nil
+
+	if lastErr != nil {
+		return 0, lastErr
+	}
+
+	if missingSample {
+		return 0, ErrNoSample
+	}
+
+	return 0, fmt.Errorf("prometheus query retry exhausted without result")
+}
+
+// queryInstantWithStatus executes a PromQL instant query and returns:
+// - value: the first sample value
+// - hasSample: whether at least one sample was returned
+// - err: API query errors
+func (p *PrometheusClient) queryInstantWithStatus(ctx context.Context, query string) (float64, bool, error) {
+	val, _, err := p.api.Query(ctx, query, time.Now())
+	if err != nil {
+		return 0, false, fmt.Errorf("prometheus query failed: %w", err)
+	}
+	if val == nil {
+		return 0, false, nil
+	}
+	if vector, ok := val.(model.Vector); ok && len(vector) > 0 {
+		return float64(vector[0].Value), true, nil
+	}
+	return 0, false, nil
 }
 
 // queryInstant executes a PromQL instant query and returns the first scalar value.
-// Returns 0 on any error so a transient scrape failure never aborts the benchmark.
+// Returns 0 on any error or when no sample is available.
 func (p *PrometheusClient) queryInstant(ctx context.Context, query string) float64 {
-	val, _, err := p.api.Query(ctx, query, time.Now())
-	if err != nil || val == nil {
+	val, hasSample, err := p.queryInstantWithStatus(ctx, query)
+	if err != nil || !hasSample {
 		return 0
 	}
-	if vector, ok := val.(model.Vector); ok && len(vector) > 0 {
-		return float64(vector[0].Value)
-	}
-	return 0
+
+	return val
 }
