@@ -19,6 +19,18 @@ data:
       base_url: {{ .Values.scenarioUrl | quote }}
     data:
       type: {{ .Values.dataType | quote }}
+      {{- if eq .Values.dataType "synthetic" }}
+      input_distribution:
+        min: 10
+        max: 1024
+        mean: 256
+        std_dev: 100
+      output_distribution:
+        min: 10
+        max: 1024
+        mean: 256
+        std_dev: 100
+      {{- end }}
     report:
       request_lifecycle:
         summary: true

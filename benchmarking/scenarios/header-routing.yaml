@@ -3,7 +3,7 @@ description: Gateway header routing
 gatewayClass: kgateway
 enableInferenceRouting: false
 enableBodyParsing: false
-dataType: shareGPT
+dataType: synthetic
 targetRPS: 100
 durationSeconds: 120
 concurrentUsers: 10

@@ -3,7 +3,7 @@ description: Full inference routing
 gatewayClass: kgateway
 enableInferenceRouting: true
 enableBodyParsing: true
-dataType: shareGPT
+dataType: synthetic
 targetRPS: 100
 durationSeconds: 120
 concurrentUsers: 20

@@ -3,7 +3,7 @@ description: EPP Fairness Check
 gatewayClass: kgateway
 enableInferenceRouting: true
 enableBodyParsing: true
-dataType: shareGPT
+dataType: synthetic
 targetRPS: 50
 durationSeconds: 120
 concurrentUsers: 15

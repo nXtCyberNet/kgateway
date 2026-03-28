@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -269,6 +270,10 @@ func (c *K8sClient) WaitForJobComplete(ctx context.Context, namespace, jobName s
 
 		job, err := c.Clientset.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				time.Sleep(2 * time.Second)
+				continue
+			}
 			return fmt.Errorf("failed to get job %s: %w", jobName, err)
 		}
 

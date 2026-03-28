@@ -5,8 +5,8 @@ metadata:
   namespace: default
 spec:
   selector:
-    matchLabels:
-      app: llm-d-sim
+    app: llm-d-sim
+  targetPortNumber: 8000
   extensionRef:
     name: llama-epp
     kind: EndpointPickerExtension
