@@ -1,7 +1,3 @@
-// pkg/scenarios/inference_routing.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package scenarios
 
 // S3InferenceRouting returns the full EPP scenario: body parsing on, InferenceModel/InferencePool

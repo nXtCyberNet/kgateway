@@ -10,16 +10,14 @@ import (
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/scenarios"
 )
 
-// ReportData is the top-level struct passed to the embedded HTML template.
+
 type ReportData struct {
 	GeneratedAt time.Time
 	Results     []*scenarios.Results
 	Regressions map[string]*scenarios.RegressionResult
 }
 
-// GenerateHTMLReport creates a single-file, self-contained HTML dashboard
-// showing all benchmark results, the "gateway tax" (overhead), streaming metrics,
-// and regression status. It is called automatically at the end of a benchmark run.
+
 func GenerateHTMLReport(results []*scenarios.Results, regressions []*scenarios.RegressionResult, outputPath string) error {
 	if len(results) == 0 {
 		return fmt.Errorf("no results to generate report")
@@ -64,7 +62,6 @@ func GenerateHTMLReport(results []*scenarios.Results, regressions []*scenarios.R
 }
 
 // htmlTemplate is a complete, self-contained HTML + Tailwind-like CSS report.
-// No external files or CDNs are required.
 const htmlTemplate = `
 <!DOCTYPE html>
 <html lang="en">

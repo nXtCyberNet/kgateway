@@ -1,0 +1,15 @@
+image: quay.io/inference-perf/inference-perf:v0.4.0
+scenarioUrl: http://example.com
+targetRps: 20
+durationSeconds: 60
+concurrentUsers: 5
+warmupSeconds: 10
+apiType: completion
+streaming: false
+serverType: vllm
+modelName: HuggingFaceTB/SmolLM2-135M-Instruct
+dataType: synthetic
+activeDeadlineSeconds: 240
+backoffLimit: 0
+ttlSecondsAfterFinished: 300
+imagePullPolicy: IfNotPresent

@@ -1,7 +1,3 @@
-// pkg/scenarios/epp_fairness.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package scenarios
 
 import "fmt"
@@ -19,10 +15,6 @@ var ExpectedFairnessDistribution = map[string]float64{
 // before CheckFairness reports a violation.
 const FairnessTolerancePct = 5.0
 
-// S5EPPFairness returns the EPP fairness scenario. Three tiers with deliberately skewed
-// KV cache pressure (10% / 50% / 90%) and response delays (50ms / 100ms / 200ms) force
-// the EPP to make non-trivial routing decisions. CheckFairness then validates that actual
-// traffic distribution matches the expected 70/20/10 weights within FairnessTolerancePct.
 func S5EPPFairness() *Scenario {
 	return &Scenario{
 		Name:                   "epp-fairness",
@@ -66,9 +58,7 @@ func S5EPPFairness() *Scenario {
 	}
 }
 
-// CheckFairness validates that the actual per-tier traffic distribution matches
-// expected weights within tolerancePct. Both maps are tier name → percentage (0-100).
-// Returns a single error listing every tier that exceeded the tolerance.
+
 func CheckFairness(actual, expected map[string]float64, tolerancePct float64) error {
 	var violations []string
 

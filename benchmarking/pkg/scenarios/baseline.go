@@ -1,7 +1,3 @@
-// pkg/scenarios/baseline.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package scenarios
 
 // S1Baseline returns the TCP baseline scenario: no inference extensions, direct L7 routing

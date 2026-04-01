@@ -1,7 +1,3 @@
-// pkg/k8s/manifests.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package k8s
 
 import (

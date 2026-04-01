@@ -1,7 +1,3 @@
-// benchmarking/pkg/metrics/prometheus.go
-// Copyright 2026 The kgateway Authors. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
-
 package metrics
 
 import (
@@ -18,7 +14,6 @@ import (
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/scenarios"
 )
 
-// PrometheusClient is a thin wrapper around the official Prometheus HTTP API client.
 type PrometheusClient struct {
 	api v1.API
 }
@@ -26,7 +21,6 @@ type PrometheusClient struct {
 // ErrNoSample indicates Prometheus query succeeded but returned no vector samples.
 var ErrNoSample = errors.New("prometheus query returned no samples")
 
-// NewPrometheusClient creates a new Prometheus client pointing at the given address.
 func NewPrometheusClient(address string) (*PrometheusClient, error) {
 	pc, err := api.NewClient(api.Config{Address: address})
 	if err != nil {

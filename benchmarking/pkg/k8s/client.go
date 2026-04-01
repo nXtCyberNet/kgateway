@@ -26,7 +26,6 @@ import (
 	"k8s.io/client-go/transport/spdy"
 )
 
-// K8sClient wraps client-go clientset and dynamic client for all benchmark orchestration.
 type K8sClient struct {
 	Clientset kubernetes.Interface
 	Dynamic   dynamic.Interface
@@ -34,7 +33,6 @@ type K8sClient struct {
 }
 
 // NewK8sClient builds a K8sClient from the given kubeconfig path.
-// If kubeconfig is empty, it falls back to in-cluster config.
 func NewK8sClient(kubeconfig string) (*K8sClient, error) {
 	var config *rest.Config
 	var err error
@@ -238,7 +236,6 @@ func (c *K8sClient) HelmInstall(ctx context.Context, release, chartPath, ns stri
 	return nil
 }
 
-// HelmUninstall removes a Helm release. A "not found" error is treated as a no-op.
 func (c *K8sClient) HelmUninstall(ctx context.Context, release, ns string) error {
 	args := []string{"uninstall", release, "--namespace", ns, "--wait"}
 
@@ -256,8 +253,6 @@ func (c *K8sClient) HelmUninstall(ctx context.Context, release, ns string) error
 	return nil
 }
 
-// WaitForJobComplete polls until the named Job in namespace reaches a terminal state
-// (Complete or Failed), or until timeout elapses.
 func (c *K8sClient) WaitForJobComplete(ctx context.Context, namespace, jobName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	lastPodDetails := ""
