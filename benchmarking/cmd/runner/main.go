@@ -20,6 +20,14 @@ import (
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/scenarios"
 )
 
+const (
+	// Allow one additional Prometheus scrape after load generation finishes so
+	// rate() queries have fresh points.
+	prometheusSettleDelay = 20 * time.Second
+	// Keep lookback larger than load duration to avoid sparse-window artifacts.
+	minMetricsLookback = 3 * time.Minute
+)
+
 func main() {
 	scenarioFlag := flag.String("scenario", "all", "Scenario to run: baseline, header-routing, inference-routing, streaming, epp-fairness, or 'all'")
 	kubeconfig := flag.String("kubeconfig", "", "Absolute path to the kubeconfig file (defaults to ~/.kube/config)")
@@ -359,13 +367,32 @@ func executeScenario(
 		return nil, fmt.Errorf("wait for inference-perf job completion: %w", err)
 	}
 
+	fmt.Printf("   Waiting %s for Prometheus scrape settle...\n", prometheusSettleDelay)
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("context cancelled before metrics scrape: %w", ctx.Err())
+	case <-time.After(prometheusSettleDelay):
+	}
+
 	// ── Metrics scrape ───────────────────────────────────────────────────────
 	// Derive the service name from the first backend tier label so the Prometheus
 	// queries are scoped to the actual services deployed for this scenario,
 	// not a hardcoded string that may not exist.
-	duration := time.Duration(scenario.DurationSeconds) * time.Second
+	loadDuration := time.Duration(scenario.DurationSeconds) * time.Second
+	metricsLookback := loadDuration + prometheusSettleDelay
+	if metricsLookback < minMetricsLookback {
+		metricsLookback = minMetricsLookback
+	}
+	fmt.Printf("   Metrics lookback window: %s\n", metricsLookback)
 
-	result, err := promClient.ScrapeGatewayMetrics(ctx, namespace, serviceName, dataPlane, duration)
+	result, err := promClient.ScrapeGatewayMetricsForRoute(
+		ctx,
+		namespace,
+		serviceName,
+		dataPlane,
+		metricsLookback,
+		scenario.DirectToSimulator,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("metrics scrape failed: %w", err)
 	}
@@ -404,7 +431,7 @@ func executeScenario(
 
 	// ── EPP fairness validation ───────────────────────────────────────────────
 	if scenario.Name == "epp-fairness" {
-		dist, distErr := promClient.ScrapeTierDistribution(ctx, namespace, duration)
+		dist, distErr := promClient.ScrapeTierDistribution(ctx, namespace, metricsLookback)
 		if distErr != nil {
 			fmt.Printf("   Warning: tier distribution scrape failed: %v\n", distErr)
 		} else if fairErr := scenarios.CheckFairness(dist, scenarios.ExpectedFairnessDistribution, scenarios.FairnessTolerancePct); fairErr != nil {
