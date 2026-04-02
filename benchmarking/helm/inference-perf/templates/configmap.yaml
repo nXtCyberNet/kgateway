@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-perf-config
+data:
+  config.yml: |
+    api:
+      type: {{ .Values.apiType | default "completion" | quote }}
+      streaming: {{ .Values.streaming | default false }}
+    server:
+      type: {{ .Values.serverType | default "vllm" | quote }}
+      model_name: {{ .Values.modelName | quote }}
+      base_url: {{ .Values.scenarioUrl | quote }}
+    data:
+      type: {{ .Values.dataType | default "synthetic" | quote }}
+    load:
+      type: constant
+      num_workers: {{ .Values.concurrentUsers | default 5 }}
+      stages:
+        - rate: {{ .Values.targetRps | default 20 }}
+          duration: {{ .Values.durationSeconds | default 60 }}

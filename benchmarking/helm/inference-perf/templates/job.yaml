@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inference-perf
+  labels:
+    app: inference-perf
+spec:
+  backoffLimit: {{ .Values.backoffLimit | default 0 }}
+  activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds | default 240 }}
+  ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished | default 300 }}
+  template:
+    metadata:
+      labels:
+        app: inference-perf
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: inference-perf
+          image: {{ .Values.image | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
+          command: ["inference-perf"]
+          args:
+            - "--config_file"
+            - "/cfg/config.yml"
+            - "--log-level"
+            - {{ .Values.logLevel | default "INFO" | quote }}
+          volumeMounts:
+            - name: config-volume
+              mountPath: /cfg
+              readOnly: true
+      volumes:
+        - name: config-volume
+          configMap:
+            name: inference-perf-config

@@ -1,4 +1,5 @@
 image: quay.io/inference-perf/inference-perf:v0.4.0
+logLevel: INFO
 scenarioUrl: http://example.com
 targetRps: 20
 durationSeconds: 60

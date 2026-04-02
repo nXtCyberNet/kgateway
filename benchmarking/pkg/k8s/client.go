@@ -256,6 +256,8 @@ func (c *K8sClient) HelmUninstall(ctx context.Context, release, ns string) error
 func (c *K8sClient) WaitForJobComplete(ctx context.Context, namespace, jobName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	lastPodDetails := ""
+	jobNotFoundSince := time.Time{}
+	const jobCreateGracePeriod = 60 * time.Second
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -266,11 +268,18 @@ func (c *K8sClient) WaitForJobComplete(ctx context.Context, namespace, jobName s
 		job, err := c.Clientset.BatchV1().Jobs(namespace).Get(ctx, jobName, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
+				if jobNotFoundSince.IsZero() {
+					jobNotFoundSince = time.Now()
+				}
+				if time.Since(jobNotFoundSince) > jobCreateGracePeriod {
+					return fmt.Errorf("job %s was not created within %s after helm install; check Helm chart templates and rendered resources", jobName, jobCreateGracePeriod)
+				}
 				time.Sleep(2 * time.Second)
 				continue
 			}
 			return fmt.Errorf("failed to get job %s: %w", jobName, err)
 		}
+		jobNotFoundSince = time.Time{}
 
 		for _, cond := range job.Status.Conditions {
 			if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
