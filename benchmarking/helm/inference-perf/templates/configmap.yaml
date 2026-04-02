@@ -13,9 +13,24 @@ data:
       base_url: {{ .Values.scenarioUrl | quote }}
     data:
       type: {{ .Values.dataType | default "synthetic" | quote }}
+      input_distribution:
+        min: {{ .Values.inputDistribution.min | default 16 }}
+        max: {{ .Values.inputDistribution.max | default 256 }}
+        mean: {{ .Values.inputDistribution.mean | default 64 }}
+        std_dev: {{ .Values.inputDistribution.std_dev | default 16 }}
+        total_count: {{ .Values.inputDistribution.total_count | default 5000 }}
+      output_distribution:
+        min: {{ .Values.outputDistribution.min | default 16 }}
+        max: {{ .Values.outputDistribution.max | default 128 }}
+        mean: {{ .Values.outputDistribution.mean | default 48 }}
+        std_dev: {{ .Values.outputDistribution.std_dev | default 12 }}
+        total_count: {{ .Values.outputDistribution.total_count | default 5000 }}
     load:
       type: constant
+      interval: {{ .Values.loadIntervalSeconds | default 1.0 }}
       num_workers: {{ .Values.concurrentUsers | default 5 }}
+      worker_max_concurrency: {{ .Values.workerMaxConcurrency | default 100 }}
+      worker_max_tcp_connections: {{ .Values.workerMaxTCPConnections | default 2500 }}
       stages:
         - rate: {{ .Values.targetRps | default 20 }}
           duration: {{ .Values.durationSeconds | default 60 }}

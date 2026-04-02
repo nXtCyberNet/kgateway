@@ -10,6 +10,23 @@ streaming: false
 serverType: vllm
 modelName: HuggingFaceTB/SmolLM2-135M-Instruct
 dataType: synthetic
+loadIntervalSeconds: 1.0
+workerMaxConcurrency: 100
+workerMaxTCPConnections: 2500
+# Inference-perf config reference:
+# https://github.com/kubernetes-sigs/inference-perf/blob/main/docs/config.md
+inputDistribution:
+  min: 16
+  max: 256
+  mean: 64
+  std_dev: 16
+  total_count: 5000
+outputDistribution:
+  min: 16
+  max: 128
+  mean: 48
+  std_dev: 12
+  total_count: 5000
 activeDeadlineSeconds: 240
 backoffLimit: 0
 ttlSecondsAfterFinished: 300
