@@ -25,11 +25,13 @@ data:
         max: {{ .Values.inputDistribution.max | default 256 }}
         mean: {{ .Values.inputDistribution.mean | default 64 }}
         std_dev: {{ .Values.inputDistribution.std_dev | default 16 }}
+        total_count: {{ .Values.inputDistribution.total_count | default 500 }}
       output_distribution:
         min: {{ .Values.outputDistribution.min | default 16 }}
         max: {{ .Values.outputDistribution.max | default 128 }}
         mean: {{ .Values.outputDistribution.mean | default 48 }}
         std_dev: {{ .Values.outputDistribution.std_dev | default 12 }}
+        total_count: {{ .Values.outputDistribution.total_count | default 500 }}
       {{- end }}
     load:
       type: constant

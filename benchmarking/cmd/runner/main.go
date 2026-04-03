@@ -357,16 +357,18 @@ func executeScenario(
 		// Keep synthetic generation explicit so inference-perf never sees null
 		// input/output distributions when no trace dataset is configured.
 		"inputDistribution": map[string]interface{}{
-			"min":     16,
-			"max":     256,
-			"mean":    64,
-			"std_dev": 16,
+			"min":         16,
+			"max":         256,
+			"mean":        64,
+			"std_dev":     16,
+			"total_count": 500,
 		},
 		"outputDistribution": map[string]interface{}{
-			"min":     16,
-			"max":     128,
-			"mean":    48,
-			"std_dev": 12,
+			"min":         16,
+			"max":         128,
+			"mean":        48,
+			"std_dev":     12,
+			"total_count": 500,
 		},
 	}
 	if scenario.DataType != "" {
