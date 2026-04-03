@@ -1,4 +1,4 @@
-image: quay.io/inference-perf/inference-perf:v0.4.0
+image: ghcr.io/llm-d/llm-d-inference-sim:v0.7.1
 logLevel: INFO
 scenarioUrl: http://example.com
 targetRps: 20
@@ -20,13 +20,11 @@ inputDistribution:
   max: 256
   mean: 64
   std_dev: 16
-  total_count: 5000
 outputDistribution:
   min: 16
   max: 128
   mean: 48
   std_dev: 12
-  total_count: 5000
 activeDeadlineSeconds: 240
 backoffLimit: 0
 ttlSecondsAfterFinished: 300

@@ -13,18 +13,24 @@ data:
       base_url: {{ .Values.scenarioUrl | quote }}
     data:
       type: {{ .Values.dataType | default "synthetic" | quote }}
+      {{- if eq (.Values.dataType | default "synthetic") "synthetic" }}
+      {{- if not .Values.inputDistribution }}
+      {{- fail "inputDistribution must be configured when dataType is synthetic" }}
+      {{- end }}
+      {{- if not .Values.outputDistribution }}
+      {{- fail "outputDistribution must be configured when dataType is synthetic" }}
+      {{- end }}
       input_distribution:
         min: {{ .Values.inputDistribution.min | default 16 }}
         max: {{ .Values.inputDistribution.max | default 256 }}
         mean: {{ .Values.inputDistribution.mean | default 64 }}
         std_dev: {{ .Values.inputDistribution.std_dev | default 16 }}
-        total_count: {{ .Values.inputDistribution.total_count | default 5000 }}
       output_distribution:
         min: {{ .Values.outputDistribution.min | default 16 }}
         max: {{ .Values.outputDistribution.max | default 128 }}
         mean: {{ .Values.outputDistribution.mean | default 48 }}
         std_dev: {{ .Values.outputDistribution.std_dev | default 12 }}
-        total_count: {{ .Values.outputDistribution.total_count | default 5000 }}
+      {{- end }}
     load:
       type: constant
       interval: {{ .Values.loadIntervalSeconds | default 1.0 }}

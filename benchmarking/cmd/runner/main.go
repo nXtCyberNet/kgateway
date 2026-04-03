@@ -18,6 +18,8 @@ import (
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/metrics"
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/report"
 	"github.com/kgateway-dev/kgateway/benchmarking/pkg/scenarios"
+	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -343,12 +345,29 @@ func executeScenario(
 	}
 	activeDeadlineSeconds := int(math.Ceil(jobTimeout.Seconds()))
 	helmParams := map[string]interface{}{
-		"scenarioUrl":           targetURL,
-		"targetRps":             scenario.TargetRPS,
-		"durationSeconds":       scenario.DurationSeconds,
-		"concurrentUsers":       scenario.ConcurrentUsers,
-		"warmupSeconds":         scenario.WarmupSeconds,
-		"activeDeadlineSeconds": activeDeadlineSeconds,
+		"scenarioUrl":             targetURL,
+		"targetRps":               scenario.TargetRPS,
+		"durationSeconds":         scenario.DurationSeconds,
+		"concurrentUsers":         scenario.ConcurrentUsers,
+		"warmupSeconds":           scenario.WarmupSeconds,
+		"activeDeadlineSeconds":   activeDeadlineSeconds,
+		"loadIntervalSeconds":     1.0,
+		"workerMaxConcurrency":    100,
+		"workerMaxTCPConnections": 2500,
+		// Keep synthetic generation explicit so inference-perf never sees null
+		// input/output distributions when no trace dataset is configured.
+		"inputDistribution": map[string]interface{}{
+			"min":     16,
+			"max":     256,
+			"mean":    64,
+			"std_dev": 16,
+		},
+		"outputDistribution": map[string]interface{}{
+			"min":     16,
+			"max":     128,
+			"mean":    48,
+			"std_dev": 12,
+		},
 	}
 	if scenario.DataType != "" {
 		helmParams["dataType"] = scenario.DataType
@@ -356,6 +375,9 @@ func executeScenario(
 
 	if err := k8sClient.HelmInstall(ctx, "inference-perf", chartPath, namespace, helmParams); err != nil {
 		return nil, fmt.Errorf("helm install inference-perf: %w", err)
+	}
+	if err := validateInferencePerfConfigMap(ctx, k8sClient, namespace); err != nil {
+		return nil, fmt.Errorf("validate inference-perf configmap: %w", err)
 	}
 
 	fmt.Printf("   Waiting for inference-perf job completion (timeout=%s)...\n", jobTimeout)
@@ -552,6 +574,58 @@ func saveBaselineJSON(path string, result *scenarios.Results) error {
 		return fmt.Errorf("write baseline file: %w", err)
 	}
 
+	return nil
+}
+
+type inferencePerfConfig struct {
+	Data struct {
+		Type               string         `yaml:"type"`
+		InputDistribution  map[string]any `yaml:"input_distribution"`
+		OutputDistribution map[string]any `yaml:"output_distribution"`
+	} `yaml:"data"`
+}
+
+func validateInferencePerfConfigMap(ctx context.Context, c *k8s.K8sClient, namespace string) error {
+	const configMapName = "inference-perf-config"
+	cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to read configmap %s/%s: %w", namespace, configMapName, err)
+	}
+
+	configYAML, ok := cm.Data["config.yml"]
+	if !ok || strings.TrimSpace(configYAML) == "" {
+		return fmt.Errorf("configmap %s/%s missing config.yml", namespace, configMapName)
+	}
+
+	var cfg inferencePerfConfig
+	if err := yaml.Unmarshal([]byte(configYAML), &cfg); err != nil {
+		return fmt.Errorf("failed to parse config.yml: %w", err)
+	}
+
+	if strings.EqualFold(cfg.Data.Type, "synthetic") {
+		if err := validateSyntheticDistribution("input_distribution", cfg.Data.InputDistribution); err != nil {
+			return err
+		}
+		if err := validateSyntheticDistribution("output_distribution", cfg.Data.OutputDistribution); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("   ConfigMap %s validated for data.type=%s\n", configMapName, cfg.Data.Type)
+	return nil
+}
+
+func validateSyntheticDistribution(name string, dist map[string]any) error {
+	if len(dist) == 0 {
+		return fmt.Errorf("synthetic data generator requires %s to be configured", name)
+	}
+	required := []string{"min", "max", "mean", "std_dev", "total_count"}
+	for _, key := range required {
+		v, ok := dist[key]
+		if !ok || v == nil {
+			return fmt.Errorf("synthetic data generator requires %s.%s to be configured", name, key)
+		}
+	}
 	return nil
 }
 
